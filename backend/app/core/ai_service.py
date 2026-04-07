@@ -272,21 +272,20 @@ async def _call_ai_json_chunked(
     temperature: float = 0.05,
     max_tokens: int = 4096,
 ) -> dict:
-    """Process large document in chunks for desensitization.
+    """Process large document in chunks for desensitization in PARALLEL.
 
-    Each chunk is processed independently, and the results are merged.
-    The report aggregates changes from all chunks.
+    Each chunk is processed independently via asyncio.gather(),
+    and the results are merged back in order.
     """
     chunks = _split_into_chunks(user_content)
-    logger.info("Large document (%d chars) split into %d chunks", len(user_content), len(chunks))
+    logger.info(
+        "Large document (%d chars) split into %d chunks, processing in parallel",
+        len(user_content), len(chunks),
+    )
 
-    all_results = []
-    total_changes = 0
-    all_changes = []
-
-    for i, chunk in enumerate(chunks):
-        logger.info("Processing chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk))
-
+    async def _process_chunk(index: int, chunk: str) -> dict:
+        """Process a single chunk and return the result with its index."""
+        logger.info("Processing chunk %d/%d (%d chars)", index + 1, len(chunks), len(chunk))
         raw = await call_ai(
             prompt_file,
             chunk,
@@ -295,17 +294,37 @@ async def _call_ai_json_chunked(
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
         )
-
         result = _extract_json_from_response(raw)
-        all_results.append(result.get("redacted_content", chunk))
+        return {
+            "index": index,
+            "content": result.get("redacted_content", chunk),
+            "total_changes": result.get("report", {}).get("total_changes", 0),
+            "changes": result.get("report", {}).get("changes", []),
+        }
 
-        report = result.get("report", {})
-        chunk_changes = report.get("changes", [])
-        total_changes += report.get("total_changes", 0)
-        all_changes.extend(chunk_changes)
+    # Parallel processing: all chunks sent to AI concurrently
+    tasks = [_process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    merged_content = "".join(all_results)
-    logger.info("Chunked processing complete: total_changes=%d", total_changes)
+    # Handle any exceptions from individual chunks
+    all_results = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.error("Chunk processing failed: %s", r)
+            raise r
+        all_results.append(r)
+
+    # Sort by index to maintain original order
+    all_results.sort(key=lambda x: x["index"])
+
+    total_changes = sum(r["total_changes"] for r in all_results)
+    all_changes = [c for r in all_results for c in r["changes"]]
+    merged_content = "".join(r["content"] for r in all_results)
+
+    logger.info(
+        "Chunked parallel processing complete: %d chunks, total_changes=%d",
+        len(all_results), total_changes,
+    )
 
     return {
         "redacted_content": merged_content,
