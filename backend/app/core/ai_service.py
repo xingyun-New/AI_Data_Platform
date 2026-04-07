@@ -171,60 +171,83 @@ def _extract_json_from_response(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2: Extract from markdown code block
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
+    # Strategy 2: Extract from markdown code block (most common)
+    # Match ```json ... ``` or ``` ... ```
+    code_block_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', raw, re.DOTALL)
+    if code_block_match:
         try:
-            first_newline = cleaned.index("\n")
-            cleaned = cleaned[first_newline + 1:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-            return json.loads(cleaned)
-        except (ValueError, json.JSONDecodeError):
-            pass
-
-    # Strategy 3: Find JSON between first { and last }
-    first_brace = raw.find("{")
-    last_brace = raw.rfind("}")
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        json_str = raw[first_brace:last_brace + 1]
-        # Clean up common issues: remove control characters from string values
-        json_str = re.sub(r'[\x00-\x1f\x7f]', '', json_str)
-        try:
-            return json.loads(json_str)
+            return json.loads(code_block_match.group(1).strip())
         except json.JSONDecodeError:
             pass
 
-    # Strategy 4: Try to repair escaped newlines in string values
-    if first_brace != -1 and last_brace != -1:
-        json_str = raw[first_brace:last_brace + 1]
-        try:
-            # Replace literal newlines inside JSON strings with \n
-            in_string = False
-            result_chars = []
-            i = 0
-            while i < len(json_str):
-                ch = json_str[i]
-                if ch == '"' and (i == 0 or json_str[i - 1] != '\\'):
-                    in_string = not in_string
-                if in_string and ch == '\n':
-                    result_chars.append('\\n')
-                elif in_string and ch == '\r':
-                    result_chars.append('\\r')
-                elif in_string and ch == '\t':
-                    result_chars.append('\\t')
-                else:
-                    result_chars.append(ch)
-                i += 1
-            repaired = ''.join(result_chars)
-            return json.loads(repaired)
-        except json.JSONDecodeError:
-            pass
+    # Strategy 3: Find the outermost { ... } pair that forms valid JSON
+    # Walk through the string tracking brace depth to find the complete top-level JSON
+    depth = 0
+    in_string = False
+    escape_next = False
+    start_pos = -1
+
+    for i, ch in enumerate(raw):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\':
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            if depth == 0:
+                start_pos = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start_pos >= 0:
+                json_str = raw[start_pos:i + 1]
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    start_pos = -1
+                    continue
+
+    # Strategy 4: Try to repair common issues in the raw string
+    # Replace literal newlines in string values with \n
+    if start_pos >= 0:
+        json_str = raw[start_pos:]
+    else:
+        first_brace = raw.find("{")
+        json_str = raw[first_brace:] if first_brace >= 0 else raw
+
+    try:
+        # Fix unescaped newlines/tabs inside JSON strings
+        repaired = []
+        in_str = False
+        esc = False
+        for ch in json_str:
+            if esc:
+                repaired.append(ch)
+                esc = False
+                continue
+            if ch == '\\' and in_str:
+                repaired.append(ch)
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+            if in_str and ch in ('\n', '\r', '\t'):
+                repaired.append('\\' + ch)
+            else:
+                repaired.append(ch)
+        return json.loads(''.join(repaired))
+    except json.JSONDecodeError:
+        pass
 
     raise ValueError(
         f"Failed to parse AI response as JSON (length={len(raw)}, "
-        f"preview={raw[:200]})"
+        f"preview={raw[:300]})"
     )
 
 
@@ -306,13 +329,23 @@ async def _call_ai_json_chunked(
     tasks = [_process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Handle any exceptions from individual chunks
+    # Handle results: successful ones + fallback for failed ones
     all_results = []
-    for r in results:
+    for i, r in enumerate(results):
         if isinstance(r, Exception):
-            logger.error("Chunk processing failed: %s", r)
-            raise r
-        all_results.append(r)
+            logger.warning(
+                "Chunk %d processing failed (%s), using original content as fallback",
+                i, str(r)[:200],
+            )
+            # Fallback: use original chunk content, report no changes
+            all_results.append({
+                "index": i,
+                "content": chunks[i],
+                "total_changes": 0,
+                "changes": [],
+            })
+        else:
+            all_results.append(r)
 
     # Sort by index to maintain original order
     all_results.sort(key=lambda x: x["index"])
