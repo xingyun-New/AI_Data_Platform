@@ -1,0 +1,37 @@
+# Production override for docker-compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    environment:
+      # Production environment variables
+      - DATABASE_URL=postgresql+psycopg2://appuser:${DB_PASSWORD}@db:5432/ai_data_platform
+      - SECRET_KEY=${SECRET_KEY}
+      - UNIFIED_PASSWORD=${UNIFIED_PASSWORD}
+
+  frontend:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G

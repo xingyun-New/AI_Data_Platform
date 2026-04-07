@@ -1,0 +1,9 @@
+node_modules
+dist
+npm-debug.log*
+.env
+.dockerignore
+Dockerfile
+nginx.conf
+.vscode
+.git

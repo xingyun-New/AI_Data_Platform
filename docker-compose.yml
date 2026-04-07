@@ -1,0 +1,66 @@
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:17-alpine
+    container_name: ai_data_platform_db
+    environment:
+      POSTGRES_DB: ai_data_platform
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppassword
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d ai_data_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai_platform_net
+    restart: unless-stopped
+
+  # Backend API (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai_data_platform_backend
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://appuser:apppassword@db:5432/ai_data_platform
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./data/raw:/data/raw
+      - ./data/redacted:/data/redacted
+      - ./data/index:/data/index
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - ai_platform_net
+    restart: unless-stopped
+
+  # Frontend (Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai_data_platform_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - ai_platform_net
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  ai_platform_net:
+    driver: bridge
