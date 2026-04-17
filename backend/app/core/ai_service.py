@@ -91,9 +91,10 @@ async def call_ai(
     *,
     extra_system: str = "",
     temperature: float = 0.3,
-    max_tokens: int = 4096,
+    max_tokens: int = 8192,
     retries: int = 3,
     response_format: dict | None = None,
+    model: str | None = None,
 ) -> str:
     """Send a request to the DashScope AI model with exponential backoff retry.
 
@@ -105,6 +106,7 @@ async def call_ai(
         max_tokens: Maximum tokens in the response.
         retries: Number of retry attempts on transient failures.
         response_format: Optional response format (e.g. {"type": "json_object"}).
+        model: Optional per-call model override. Defaults to ``settings.dashscope_model``.
 
     Returns:
         The raw text response from the model.
@@ -120,16 +122,18 @@ async def call_ai(
     estimated_input_tokens = len(user_content) // 4
     effective_max_tokens = max(max_tokens, estimated_input_tokens * 2)
 
+    active_model = model or settings.dashscope_model
+
     for attempt in range(retries):
         try:
             logger.info(
                 "Calling AI model=%s prompt=%s content_len=%d max_tokens=%d attempt=%d/%d",
-                settings.dashscope_model, prompt_file, len(user_content),
+                active_model, prompt_file, len(user_content),
                 effective_max_tokens, attempt + 1, retries,
             )
 
             kwargs = {
-                "model": settings.dashscope_model,
+                "model": active_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
@@ -258,6 +262,7 @@ async def call_ai_json(
     extra_system: str = "",
     temperature: float = 0.05,
     max_tokens: int = 4096,
+    model: str | None = None,
 ) -> dict:
     """Call AI and parse the response as JSON.
 
@@ -273,6 +278,7 @@ async def call_ai_json(
             extra_system=extra_system,
             temperature=temperature,
             max_tokens=max_tokens,
+            model=model,
         )
 
     # Small document: single call with JSON mode
@@ -283,6 +289,7 @@ async def call_ai_json(
         temperature=temperature,
         max_tokens=max_tokens,
         response_format={"type": "json_object"},
+        model=model,
     )
     return _extract_json_from_response(raw)
 
@@ -294,6 +301,7 @@ async def _call_ai_json_chunked(
     extra_system: str = "",
     temperature: float = 0.05,
     max_tokens: int = 4096,
+    model: str | None = None,
 ) -> dict:
     """Process large document in chunks for desensitization in PARALLEL.
 
@@ -316,6 +324,7 @@ async def _call_ai_json_chunked(
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            model=model,
         )
         result = _extract_json_from_response(raw)
         return {

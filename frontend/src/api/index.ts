@@ -10,8 +10,11 @@ import type {
   LoginResponse,
   PaginatedResponse,
   PromptFile,
+  ResolvedPath,
   RuleCreate,
   RuleItem,
+  SettingUpdatePayload,
+  SettingsGroup,
 } from './types';
 
 export const authApi = {
@@ -28,13 +31,18 @@ export const docApi = {
   desensitize: (id: number) => client.post(`/api/documents/${id}/desensitize`),
   generateIndex: (id: number) => client.post(`/api/documents/${id}/generate-index`),
   delete: (id: number) => client.delete(`/api/documents/${id}`),
-  uploadToDify: (id: number) =>
-    client.post(`/api/documents/${id}/upload-to-dify`),
-  upload: (file: File, department?: string) => {
+  uploadToDify: (id: number, knowledgeBaseId?: string) =>
+    client.post(`/api/documents/${id}/upload-to-dify`, null, {
+      params: knowledgeBaseId ? { knowledge_base_id: knowledgeBaseId } : {},
+    }),
+  upload: (file: File, department?: string, knowledgeBaseId?: string) => {
     const form = new FormData();
     form.append('file', file);
+    const params: Record<string, string> = {};
+    if (department) params.department = department;
+    if (knowledgeBaseId) params.knowledge_base_id = knowledgeBaseId;
     return client.post('/api/documents/upload', form, {
-      params: department ? { department } : {},
+      params,
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
@@ -67,11 +75,58 @@ export const promptApi = {
 };
 
 export const batchApi = {
-  run: () => client.post('/api/batch/run'),
+  run: (params?: { department?: string; knowledge_base_id?: string }) =>
+    client.post('/api/batch/run', null, { params }),
   status: () => client.get<{ is_running: boolean; current_batch_id: string | null }>('/api/batch/status'),
   history: (params?: { page?: number; size?: number }) =>
     client.get<PaginatedResponse<BatchSummary>>('/api/batch/history', { params }),
   logs: (batchId: string) => client.get<BatchFileLogItem[]>(`/api/batch/logs/${batchId}`),
 };
 
-export type { DocumentItem, RuleItem, IndexRuleItem, PromptFile, BatchSummary, BatchFileLogItem, PaginatedResponse };
+export const graphApi = {
+  stats: () => client.get<import('./types').KgStats>('/api/graph/stats'),
+  listEntities: (params?: { q?: string; entity_type?: string; page?: number; size?: number }) =>
+    client.get<PaginatedResponse<import('./types').KgEntity>>('/api/graph/entities', { params }),
+  entityDocuments: (entityId: number) =>
+    client.get<{ entity: { id: number; name: string; entity_type: string }; documents: import('./types').KgEntityDocument[] }>(
+      `/api/graph/entities/${entityId}/documents`,
+    ),
+  documentGraph: (docId: number) =>
+    client.get<import('./types').KgDocumentGraph>(`/api/graph/document/${docId}`),
+  deleteDocumentGraph: (docId: number) =>
+    client.delete(`/api/graph/document/${docId}`),
+  rebuild: (data?: { document_ids?: number[] | null; only_missing?: boolean; limit?: number | null }) =>
+    client.post<import('./types').KgRebuildResult>('/api/graph/rebuild', data || {}),
+  retrieve: (data: { query: string; top_k?: number; department?: string | null }) =>
+    client.post<{
+      query: string;
+      matched_entities: { id: number; name: string; type: string }[];
+      documents: import('./types').KgRetrieveDoc[];
+      knowledge_db_names: string[];
+    }>('/api/graph/retrieve', data),
+};
+
+export const settingsApi = {
+  getAll: () => client.get<SettingsGroup>('/api/settings'),
+  updateAll: (data: SettingUpdatePayload) => client.put('/api/settings', data),
+  updateSingle: (key: string, value: string, pathMode?: string) =>
+    client.put(`/api/settings/${key}`, { value, path_mode: pathMode }),
+  resolvePath: (relativePath: string) =>
+    client.get<ResolvedPath>('/api/settings/resolve-path', { params: { relative_path: relativePath } }),
+  getKnowledgeBases: () => client.get<{ knowledge_bases: import('./types').KnowledgeBase[]; default_id: string }>('/api/knowledge-bases'),
+  saveKnowledgeBases: (data: { knowledge_bases: import('./types').KnowledgeBase[]; default_id: string }) =>
+    client.put('/api/knowledge-bases', data),
+};
+
+export type {
+  BatchFileLogItem,
+  BatchSummary,
+  DocumentItem,
+  IndexRuleItem,
+  KnowledgeBase,
+  PaginatedResponse,
+  PromptFile,
+  RuleItem,
+  SettingsGroup,
+  SettingUpdatePayload,
+} from './types';

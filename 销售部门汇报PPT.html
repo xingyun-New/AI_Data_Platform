@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>销售部门汇报 - AI数据平台</title>
+    <style>
+        :root {
+            --primary: #1a56db;
+            --primary-light: #3b82f6;
+            --secondary: #0f172a;
+            --accent: #f59e0b;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --gray-100: #f1f5f9;
+            --gray-200: #e2e8f0;
+            --gray-600: #475569;
+            --gray-800: #1e293b;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--secondary);
+            color: var(--gray-800);
+        }
+        
+        .slide {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 60px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .slide:not(:first-child) {
+            display: none;
+        }
+        
+        .slide.active {
+            display: flex;
+        }
+        
+        /* Slide backgrounds */
+        .slide-1 {
+            background: linear-gradient(135deg, #0f172a 0%, #1e40af 100%);
+            color: white;
+        }
+        
+        .slide-2 {
+            background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
+        }
+        
+        .slide-3 {
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        }
+        
+        .slide-4 {
+            background: linear-gradient(135deg, #ffffff 0%, #ecfdf5 100%);
+        }
+        
+        .slide-5 {
+            background: linear-gradient(135deg, #ffffff 0%, #fef3c7 100%);
+        }
+        
+        .slide-6 {
+            background: linear-gradient(135deg, #0f172a 0%, #1e40af 100%);
+            color: white;
+        }
+        
+        .slide-7 {
+            background: linear-gradient(135deg, #0f172a 0%, #059669 100%);
+            color: white;
+        }
+        
+        /* Typography */
+        h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+        
+        h2 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+        
+        h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        p {
+            font-size: 1.25rem;
+            line-height: 1.6;
+        }
+        
+        .subtitle {
+            font-size: 1.5rem;
+            opacity: 0.9;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+        
+        .content {
+            max-width: 1000px;
+            width: 100%;
+        }
+        
+        /* Comparison table */
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .comparison-card {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        
+        .comparison-card.problem {
+            border-left: 4px solid var(--danger);
+        }
+        
+        .comparison-card.solution {
+            border-left: 4px solid var(--success);
+        }
+        
+        .comparison-card h3 {
+            color: var(--gray-600);
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .comparison-card ul {
+            list-style: none;
+            margin-top: 1rem;
+        }
+        
+        .comparison-card li {
+            font-size: 1.1rem;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--gray-200);
+            line-height: 1.5;
+        }
+        
+        .comparison-card li:last-child {
+            border-bottom: none;
+        }
+        
+        /* Flow diagram */
+        .flow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+        
+        .flow-step {
+            background: rgba(255,255,255,0.1);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 16px;
+            padding: 2rem;
+            text-align: center;
+            min-width: 200px;
+        }
+        
+        .flow-step h3 {
+            color: var(--accent);
+            font-size: 1.3rem;
+            margin-bottom: 1rem;
+        }
+        
+        .flow-step p {
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+        
+        .flow-arrow {
+            font-size: 2rem;
+            color: var(--accent);
+        }
+        
+        /* Benefits list */
+        .benefits {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+        
+        .benefit-item {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            font-size: 1.1rem;
+        }
+        
+        .benefit-item::before {
+            content: "✓";
+            color: var(--success);
+            font-weight: bold;
+            margin-right: 0.5rem;
+        }
+        
+        /* Permission matrix */
+        .matrix {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 2rem 0;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .matrix th {
+            background: var(--secondary);
+            color: white;
+            padding: 1rem;
+            font-size: 1rem;
+        }
+        
+        .matrix td {
+            padding: 1rem;
+            text-align: center;
+            border-bottom: 1px solid var(--gray-200);
+        }
+        
+        .matrix tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .badge-success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .badge-danger {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        
+        /* Desensitization comparison */
+        .desensitize {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin: 2rem 0;
+        }
+        
+        .desensitize-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+        
+        .desensitize-card.original {
+            border-top: 4px solid var(--danger);
+        }
+        
+        .desensitize-card.redacted {
+            border-top: 4px solid var(--success);
+        }
+        
+        .desensitize-card h4 {
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        
+        .desensitize-card pre {
+            background: var(--gray-100);
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        
+        /* Discussion questions */
+        .questions {
+            display: grid;
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+        
+        .question-card {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+        
+        .question-card h3 {
+            color: var(--accent);
+            margin-bottom: 1rem;
+        }
+        
+        .options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+        
+        .option {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .option:hover {
+            background: rgba(255,255,255,0.15);
+            border-color: var(--accent);
+        }
+        
+        .option-label {
+            color: var(--accent);
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        
+        /* Navigation */
+        .nav {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 1rem;
+            z-index: 100;
+        }
+        
+        .nav-btn {
+            background: white;
+            border: none;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            transition: all 0.2s;
+        }
+        
+        .nav-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .nav-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        
+        .slide-counter {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            z-index: 100;
+        }
+        
+        /* Key point */
+        .key-point {
+            background: rgba(255,255,255,0.1);
+            border-left: 4px solid var(--accent);
+            padding: 1rem 1.5rem;
+            border-radius: 0 8px 8px 0;
+            margin-top: 2rem;
+            font-size: 1.1rem;
+        }
+        
+        /* Next steps */
+        .next-steps {
+            display: grid;
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+        
+        .step {
+            background: rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+        
+        .step-number {
+            background: var(--accent);
+            color: var(--secondary);
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        
+        .step-content h3 {
+            margin-bottom: 0.5rem;
+        }
+        
+        /* Footer text */
+        .footer-text {
+            margin-top: auto;
+            font-size: 1.2rem;
+            opacity: 0.9;
+            text-align: center;
+            font-style: italic;
+        }
+        
+        /* Light text for dark slides */
+        .light-text {
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+    <!-- Slide 1: 开场 -->
+    <div class="slide slide-1 active" data-slide="1">
+        <div class="content" style="text-align: center;">
+            <h1>让公司的知识为销售赋能</h1>
+            <p class="subtitle">AI数据平台 — 信息共享与安全控制方案</p>
+            
+            <div style="margin-top: 2rem;">
+                <p style="font-size: 1.3rem; margin-bottom: 2rem;">这个平台只做3件事：</p>
+                <div style="display: flex; justify-content: center; gap: 2rem;">
+                    <div style="background: rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; min-width: 200px; border: 2px solid rgba(255,255,255,0.2);">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">📥</div>
+                        <h3 style="color: var(--accent); margin-bottom: 0.5rem;">1. 数据收集</h3>
+                        <p style="font-size: 1rem; opacity: 0.9;">从SharePoint/邮件/CRM<br/>自动获取文档</p>
+                    </div>
+                    <div style="font-size: 3rem; align-self: center; color: var(--accent);">→</div>
+                    <div style="background: rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; min-width: 200px; border: 2px solid rgba(255,255,255,0.2);">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">🤖</div>
+                        <h3 style="color: var(--accent); margin-bottom: 0.5rem;">2. 数据脱敏</h3>
+                        <p style="font-size: 1rem; opacity: 0.9;">AI自动识别敏感内容<br/>生成脱敏版本</p>
+                    </div>
+                    <div style="font-size: 3rem; align-self: center; color: var(--accent);">→</div>
+                    <div style="background: rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; min-width: 200px; border: 2px solid rgba(255,255,255,0.2);">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">🔓</div>
+                        <h3 style="color: var(--accent); margin-bottom: 0.5rem;">3. 按规则分享</h3>
+                        <p style="font-size: 1rem; opacity: 0.9;">谁可以看什么<br/>你们说了算</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 3rem; padding: 1.5rem; background: rgba(245,158,11,0.2); border-radius: 12px; border: 1px solid var(--accent);">
+                <p style="font-size: 1.2rem;">今天的目的：请各位帮我们确认两件事</p>
+                <p style="font-size: 1rem; opacity: 0.9; margin-top: 0.5rem;">1. 什么信息可以共享？共享给谁？ &nbsp;&nbsp; 2. 敏感信息如何保护？</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 2: 信息如何分享 -->
+    <div class="slide slide-2" data-slide="2">
+        <div class="content">
+            <h2 style="color: var(--secondary);">信息分享的两条路 — 私有 vs 共享</h2>
+            <p style="text-align: center; color: var(--gray-600); margin-bottom: 2rem; font-size: 1.1rem;">
+                信息按"是否需要分享"走不同的路
+            </p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+                <!-- Private env -->
+                <div style="background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border-top: 4px solid var(--primary);">
+                    <div style="text-align: center; margin-bottom: 1.5rem;">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔒</div>
+                        <h3 style="color: var(--primary); font-size: 1.4rem;">私有环境</h3>
+                        <p style="color: var(--gray-600); font-size: 0.9rem;">User Development Env</p>
+                    </div>
+                    <ul style="list-style: none;">
+                        <li style="padding: 0.6rem 0; border-bottom: 1px solid var(--gray-200); font-size: 1.05rem;">
+                            <strong>不需要分享</strong>的信息 → 上传到个人知识库
+                        </li>
+                        <li style="padding: 0.6rem 0; border-bottom: 1px solid var(--gray-200); font-size: 1.05rem;">
+                            只有<strong>自己</strong>能通过AI查询
+                        </li>
+                        <li style="padding: 0.6rem 0; font-size: 1.05rem;">
+                            例如：PE内部知识、个人工作笔记
+                        </li>
+                    </ul>
+                    <div style="background: var(--gray-100); border-radius: 8px; padding: 0.8rem; margin-top: 1rem; text-align: center; font-weight: 600; color: var(--primary);">
+                        你的数据只有你自己能看到
+                    </div>
+                </div>
+                <!-- Shared env -->
+                <div style="background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border-top: 4px solid var(--success);">
+                    <div style="text-align: center; margin-bottom: 1.5rem;">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔓</div>
+                        <h3 style="color: var(--success); font-size: 1.4rem;">共享环境</h3>
+                        <p style="color: var(--gray-600); font-size: 0.9rem;">Dify Production Env</p>
+                    </div>
+                    <ul style="list-style: none;">
+                        <li style="padding: 0.6rem 0; border-bottom: 1px solid var(--gray-200); font-size: 1.05rem;">
+                            <strong>需要分享</strong>的信息 → 进入共享知识库
+                        </li>
+                        <li style="padding: 0.6rem 0; border-bottom: 1px solid var(--gray-200); font-size: 1.05rem;">
+                            按规则控制：什么数据 → 分享给谁
+                        </li>
+                        <li style="padding: 0.6rem 0; border-bottom: 1px solid var(--gray-200); font-size: 1.05rem;">
+                            敏感数据 → <strong>AI自动脱敏</strong>
+                        </li>
+                        <li style="padding: 0.6rem 0; font-size: 1.05rem;">
+                            例如：CRM信息、Market Search、客户资料
+                        </li>
+                    </ul>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
+                        <div style="background: #d1fae5; border-radius: 8px; padding: 0.8rem; text-align: center;">
+                            <p style="font-weight: 600; color: #065f46; font-size: 0.95rem;">脱敏版</p>
+                            <p style="color: #065f46; font-size: 0.85rem;">所有人可查询</p>
+                        </div>
+                        <div style="background: #fef3c7; border-radius: 8px; padding: 0.8rem; text-align: center;">
+                            <p style="font-weight: 600; color: #92400e; font-size: 0.95rem;">完整版</p>
+                            <p style="color: #92400e; font-size: 0.85rem;">仅指定人员</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div style="background: var(--secondary); color: white; border-radius: 8px; padding: 1rem; margin-top: 1.5rem; text-align: center;">
+                不想分享 → 放私有环境，自己用 &nbsp;|&nbsp; 要分享 → 进共享环境，按规则安全分享
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 3: 全流程 -->
+    <div class="slide slide-3" data-slide="3">
+        <div class="content" style="padding: 40px 60px;">
+            <h2 style="color: var(--secondary); font-size: 1.8rem; margin-bottom: 1.5rem;">自动收集 → AI按规则处理 → 不同人看不同内容</h2>
+
+            <div style="display: flex; align-items: flex-start; gap: 0.8rem; margin-bottom: 1.5rem;">
+                <div style="flex: 1; background: #eff6ff; border-radius: 12px; padding: 1.2rem; border-top: 3px solid var(--primary);">
+                    <h3 style="color: var(--primary); font-size: 1.1rem; margin-bottom: 0.5rem;">① 自动收集</h3>
+                    <p style="font-size: 0.95rem; color: var(--gray-600);">SharePoint / 邮件 / CRM<br/>自动获取文档</p>
+                </div>
+                <div style="align-self: center; font-size: 1.5rem; color: var(--primary);">→</div>
+                <div style="flex: 1; background: #fef3c7; border-radius: 12px; padding: 1.2rem; border-top: 3px solid var(--accent);">
+                    <h3 style="color: #92400e; font-size: 1.1rem; margin-bottom: 0.5rem;">② AI按规则处理</h3>
+                    <p style="font-size: 0.95rem; color: var(--gray-600);">识别敏感内容<br/>生成<strong>完整版</strong> + <strong>脱敏版</strong></p>
+                </div>
+                <div style="align-self: center; font-size: 1.5rem; color: var(--primary);">→</div>
+                <div style="flex: 1; background: #ecfdf5; border-radius: 12px; padding: 1.2rem; border-top: 3px solid var(--success);">
+                    <h3 style="color: #065f46; font-size: 1.1rem; margin-bottom: 0.5rem;">③ 按规则分发</h3>
+                    <p style="font-size: 0.95rem; color: var(--gray-600);">完整版 → 部门内 + 指定人<br/>脱敏版 → 所有人</p>
+                </div>
+                <div style="align-self: center; font-size: 1.5rem; color: var(--primary);">→</div>
+                <div style="flex: 1; background: #f1f5f9; border-radius: 12px; padding: 1.2rem; border-top: 3px solid var(--gray-600);">
+                    <h3 style="color: var(--gray-800); font-size: 1.1rem; margin-bottom: 0.5rem;">④ 用户访问</h3>
+                    <p style="font-size: 0.95rem; color: var(--gray-600);">不同用户<br/>看到不同内容</p>
+                </div>
+            </div>
+
+            <h3 style="color: var(--secondary); margin-bottom: 0.8rem; font-size: 1.2rem;">④ 不同用户看到什么？</h3>
+            <table class="matrix" style="margin: 0 0 1rem 0;">
+                <thead>
+                    <tr>
+                        <th>文档版本</th>
+                        <th>Owner部门内</th>
+                        <th>指定分享人</th>
+                        <th>其他所有人</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>完整版（含敏感信息）</td>
+                        <td><span class="badge badge-success">可见</span></td>
+                        <td><span class="badge badge-success">可见</span></td>
+                        <td><span class="badge badge-danger">不可见</span></td>
+                    </tr>
+                    <tr>
+                        <td>脱敏版（隐去敏感信息）</td>
+                        <td><span class="badge badge-success">可见</span></td>
+                        <td><span class="badge badge-success">可见</span></td>
+                        <td><span class="badge badge-success">可见</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            <div style="display: flex; gap: 1rem; font-size: 0.9rem; color: var(--gray-600);">
+                <span><span style="color: var(--success);">✓</span> Owner部门决定谁是"指定分享人"</span>
+                <span><span style="color: var(--success);">✓</span> AI建议 + 人工最终决定</span>
+                <span><span style="color: var(--success);">✓</span> 规则可按文档类型预设</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 4: 好处 -->
+    <div class="slide slide-4" data-slide="4">
+        <div class="content">
+            <h2 style="color: var(--secondary);">对你们有什么好处？不会增加工作量</h2>
+            <div class="benefits">
+                <div class="benefit-item">成功的OPP方案变成AI知识库，新人也能快速上手</div>
+                <div class="benefit-item">PE/R&D看到需求文档，方案支持更精准</div>
+                <div class="benefit-item">AI 24小时回答产品/客户问题，减少重复劳动</div>
+                <div class="benefit-item">节省约80%的数据整理时间</div>
+            </div>
+            <div style="background: white; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+                <h3 style="color: var(--secondary); margin-bottom: 1rem;">关于工作量</h3>
+                <ul style="list-style: none;">
+                    <li style="padding: 0.5rem 0; border-bottom: 1px solid var(--gray-200);">
+                        <span style="color: var(--success); margin-right: 0.5rem;">✓</span>
+                        系统自动采集，不需要人工上传
+                    </li>
+                    <li style="padding: 0.5rem 0; border-bottom: 1px solid var(--gray-200);">
+                        <span style="color: var(--success); margin-right: 0.5rem;">✓</span>
+                        规则预设好之后自动执行，不需要逐篇审批
+                    </li>
+                    <li style="padding: 0.5rem 0;">
+                        <span style="color: var(--success); margin-right: 0.5rem;">✓</span>
+                        部门管理员可以随时调整共享规则
+                    </li>
+                </ul>
+            </div>
+            <p class="light-text" style="margin-top: 2rem; text-align: center; font-size: 1.1rem;">
+                你们觉得哪些场景对销售团队最有价值？
+            </p>
+        </div>
+    </div>
+
+    <!-- Slide 5: AI脱敏示例 -->
+    <div class="slide slide-5" data-slide="5">
+        <div class="content">
+            <h2 style="color: var(--secondary);">AI脱敏长什么样？</h2>
+
+            <div class="desensitize" style="margin: 2rem 0;">
+                <div class="desensitize-card original">
+                    <h4 style="color: var(--danger);">原文（仅销售可见）</h4>
+                    <pre>基础版定价：9999元
+旗舰版定价：19999元
+大客户折扣：最低7折</pre>
+                </div>
+                <div class="desensitize-card redacted">
+                    <h4 style="color: var(--success);">脱敏版（共享范围可见）</h4>
+                    <pre>产品分为基础版和旗舰版两个档次
+（详细定价信息为机密，请联系销售部）
+另有大客户优惠政策</pre>
+                </div>
+            </div>
+
+            <div style="background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+                <h3 style="color: var(--secondary); margin-bottom: 1rem;">三种脱敏策略（AI自动选择）</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <div style="background: var(--gray-100); border-radius: 8px; padding: 1rem;">
+                        <h4 style="color: var(--danger); margin-bottom: 0.5rem;">移除</h4>
+                        <p style="font-size: 0.95rem; color: var(--gray-600);">整段删除<br/>如：删除"人员变动"章节</p>
+                    </div>
+                    <div style="background: var(--gray-100); border-radius: 8px; padding: 1rem;">
+                        <h4 style="color: var(--accent); margin-bottom: 0.5rem;">替换</h4>
+                        <p style="font-size: 0.95rem; color: var(--gray-600);">用占位符替换<br/>如："定价：[机密数据]"</p>
+                    </div>
+                    <div style="background: var(--gray-100); border-radius: 8px; padding: 1rem;">
+                        <h4 style="color: var(--success); margin-bottom: 0.5rem;">概括</h4>
+                        <p style="font-size: 0.95rem; color: var(--gray-600);">AI改写为模糊描述<br/>如上面的定价示例</p>
+                    </div>
+                </div>
+            </div>
+            <p class="light-text" style="margin-top: 1.5rem; text-align: center; font-size: 1.1rem;">
+                人工兜底：脱敏结果可以人工审核，AI判断不准时转人工
+            </p>
+        </div>
+    </div>
+
+    <!-- Slide 6: 讨论页 -->
+    <div class="slide slide-6" data-slide="6">
+        <div class="content">
+            <h2>请帮我们定规则</h2>
+            <div class="questions">
+                <div class="question-card">
+                    <h3>Q1：部门内部可见性</h3>
+                    <div class="options">
+                        <div class="option">
+                            <span class="option-label">A.</span> 销售部所有人默认可见本部门文档
+                        </div>
+                        <div class="option">
+                            <span class="option-label">B.</span> 需要按团队/角色单独指定
+                        </div>
+                    </div>
+                </div>
+                <div class="question-card">
+                    <h3>Q2：哪些文档可以共享给PE/R&D？</h3>
+                    <div class="options">
+                        <div class="option">
+                            <span class="option-label">A.</span> 产品需求文档 — 共享？
+                        </div>
+                        <div class="option">
+                            <span class="option-label">B.</span> OPP方案 — 共享？
+                        </div>
+                        <div class="option">
+                            <span class="option-label">C.</span> 客户案例 — 共享？
+                        </div>
+                        <div class="option">
+                            <span class="option-label">D.</span> 定价/折扣 — 绝对不共享？
+                        </div>
+                    </div>
+                </div>
+                <div class="question-card">
+                    <h3>Q3：共享方式</h3>
+                    <div class="options">
+                        <div class="option">
+                            <span class="option-label">A.</span> 共享完整版（PE需要看全部细节做方案）
+                        </div>
+                        <div class="option">
+                            <span class="option-label">B.</span> 只共享脱敏版（隐去敏感数据）
+                        </div>
+                    </div>
+                </div>
+                <div class="question-card">
+                    <h3>Q4：审批流程</h3>
+                    <div class="options">
+                        <div class="option">
+                            <span class="option-label">A.</span> 按预设规则自动执行，管理员定期抽检
+                        </div>
+                        <div class="option">
+                            <span class="option-label">B.</span> 每篇文档都需要管理员手动审核后才共享
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 7: 确认问题 & 寻求支持 -->
+    <div class="slide slide-7" data-slide="7">
+        <div class="content">
+            <h2>需要你们的确认和支持</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin: 2rem 0;">
+                <div style="background: rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; border: 2px solid rgba(255,255,255,0.2);">
+                    <h3 style="color: var(--accent); margin-bottom: 1.5rem; font-size: 1.3rem;">确认问题</h3>
+                    <div style="margin-bottom: 1.5rem;">
+                        <p style="font-weight: 600; margin-bottom: 0.5rem;">Q1：关于内容分享</p>
+                        <p style="opacity: 0.9; font-size: 1.05rem;">你们对我们现在分享的内容有什么疑虑么？</p>
+                    </div>
+                    <div>
+                        <p style="font-weight: 600; margin-bottom: 0.5rem;">Q2：关于权限管理</p>
+                        <p style="opacity: 0.9; font-size: 1.05rem;">你们对现在设计的权限管理规则有什么疑问么？</p>
+                        <p style="opacity: 0.9; font-size: 1.05rem; margin-top: 0.5rem;">对你来说什么样数据算是敏感的？<br/><span style="color: var(--accent);">Demand? Price? ...</span></p>
+                    </div>
+                </div>
+                <div style="background: rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; border: 2px solid rgba(255,255,255,0.2);">
+                    <h3 style="color: var(--accent); margin-bottom: 1.5rem; font-size: 1.3rem;">寻求支持</h3>
+                    <div style="margin-bottom: 1.2rem;">
+                        <p style="opacity: 0.9; font-size: 1.05rem;">系统建好以后，我们会向各个部门宣讲这个平台，<strong>请大家支持一下</strong></p>
+                    </div>
+                    <div style="margin-bottom: 1.2rem;">
+                        <p style="opacity: 0.9; font-size: 1.05rem;">希望大家能在<strong>部门内部分享一下</strong>：什么样的信息可以分享到这个平台</p>
+                    </div>
+                    <div>
+                        <p style="opacity: 0.9; font-size: 1.05rem;">协调SharePoint权限 → AI账号需要访问部门文档库，<strong>需要老板支持</strong></p>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-text">
+                这不是一个技术方案，是一个让销售经验变成公司资产的项目
+            </div>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <div class="nav">
+        <button class="nav-btn" id="prevBtn" onclick="prevSlide()" disabled>←</button>
+        <button class="nav-btn" id="nextBtn" onclick="nextSlide()">→</button>
+    </div>
+    <div class="slide-counter">
+        <span id="currentSlide">1</span> / <span id="totalSlides">7</span>
+    </div>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = 7;
+
+        function showSlide(n) {
+            document.querySelectorAll('.slide').forEach(slide => {
+                slide.classList.remove('active');
+            });
+            
+            const targetSlide = document.querySelector(`[data-slide="${n}"]`);
+            if (targetSlide) {
+                targetSlide.classList.add('active');
+            }
+            
+            document.getElementById('currentSlide').textContent = n;
+            document.getElementById('prevBtn').disabled = (n === 1);
+            document.getElementById('nextBtn').disabled = (n === totalSlides);
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides) {
+                currentSlide++;
+                showSlide(currentSlide);
+            }
+        }
+
+        function prevSlide() {
+            if (currentSlide > 1) {
+                currentSlide--;
+                showSlide(currentSlide);
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                e.preventDefault();
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                prevSlide();
+            }
+        });
+
+        // Touch/swipe support
+        let touchStartX = 0;
+        document.addEventListener('touchstart', (e) => {
+            touchStartX = e.touches[0].clientX;
+        });
+
+        document.addEventListener('touchend', (e) => {
+            const touchEndX = e.changedTouches[0].clientX;
+            const diff = touchStartX - touchEndX;
+            if (Math.abs(diff) > 50) {
+                if (diff > 0) nextSlide();
+                else prevSlide();
+            }
+        });
+
+        // Initialize
+        showSlide(currentSlide);
+    </script>
+</body>
+</html>

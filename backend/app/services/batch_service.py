@@ -62,12 +62,23 @@ async def _do_dify_upload(
     result: _FileResult,
     raw_path: Path,
     index_doc: dict,
+    kb_id: str | None = None,
+    db: Session | None = None,
 ) -> None:
     """Upload full + redacted versions to Dify in parallel.
 
     Mutates *result* in place (upload_ms, dify_uploaded, failed_step, error).
+    Resolves dataset_id and API credentials from the specified knowledge base
+    or falls back to the default KB / settings.
     """
-    if not settings.dify_dataset_id:
+    from app.services.settings_service import get_dify_config
+
+    kb_config = get_dify_config(db, kb_id) if db else None
+    dataset_id = kb_config["dataset_id"] if kb_config else (settings.dify_dataset_id or "")
+    api_key = kb_config.get("api_key") if kb_config else None
+    base_url = kb_config.get("base_url") if kb_config else None
+
+    if not dataset_id:
         return
 
     t = time.perf_counter()
@@ -80,7 +91,10 @@ async def _do_dify_upload(
                 upload_with_metadata(
                     file_path=str(raw_path),
                     index_meta=dify_meta["full"],
+                    dataset_id=dataset_id,
                     upload_name=raw_path.name,
+                    api_key=api_key,
+                    base_url=base_url,
                 )
             )
 
@@ -95,7 +109,10 @@ async def _do_dify_upload(
                 upload_with_metadata(
                     file_path=result.redacted_path,
                     index_meta=dify_meta["redacted"],
+                    dataset_id=dataset_id,
                     upload_name=redacted_name,
+                    api_key=api_key,
+                    base_url=base_url,
                 )
             )
 
@@ -157,8 +174,24 @@ async def _process_one_file(
             result.index_ms = (time.perf_counter() - t1) * 1000
             return result
 
+        # Step 2b: persist knowledge-graph entities/relations (best-effort, non-fatal)
+        graph_block = index_doc.get("knowledge_graph")
+        if graph_block and doc_id:
+            try:
+                from app.services.kg_service import save_graph
+                await save_graph(db, doc_id, graph_block)
+            except Exception as exc:
+                logger.warning(
+                    "KG persistence failed for %s (continuing): %s", raw_path.name, exc,
+                )
+
         # Step 3: upload to Dify
-        await _do_dify_upload(result, raw_path, index_doc)
+        kb_id = None
+        if db and result.doc_id:
+            from app.models.document import Document
+            doc = db.get(Document, result.doc_id)
+            kb_id = doc.knowledge_base_id if doc else None
+        await _do_dify_upload(result, raw_path, index_doc, kb_id=kb_id, db=db)
         if result.failed_step:
             return result
 
@@ -187,7 +220,16 @@ async def _upload_one_file(
             return result
 
         index_doc = json.loads(index_raw)
-        await _do_dify_upload(result, raw_path, index_doc)
+        # Get KB ID from the document associated with this result
+        from app.database import SessionLocal
+        from app.models.document import Document
+        temp_db = SessionLocal()
+        try:
+            doc = temp_db.get(Document, result.doc_id)
+            kb_id = doc.knowledge_base_id if doc else None
+        finally:
+            temp_db.close()
+        await _do_dify_upload(result, raw_path, index_doc, kb_id=kb_id, db=None)
         if result.failed_step:
             return result
 
@@ -197,12 +239,20 @@ async def _upload_one_file(
 
 # ---- Batch orchestrator ---------------------------------------------------
 
-async def run_batch(db: Session) -> dict:
+async def run_batch(
+    db: Session,
+    *,
+    department: str | None = None,
+    knowledge_base_id: str | None = None,
+) -> dict:
     """Execute a full batch: scan raw/ -> desensitize -> index -> upload.
 
     Files are processed concurrently (up to settings.batch_concurrency).
     Already-indexed files skip AI steps and go straight to Dify upload.
     DB writes are performed sequentially after all parallel work completes.
+
+    When *department* or *knowledge_base_id* are supplied they are applied
+    to every document that does not yet have these fields set.
     """
     global _running_batch_id
 
@@ -228,7 +278,7 @@ async def run_batch(db: Session) -> dict:
     upload_only_tasks: list[tuple[Path, Document]] = []
 
     for raw_path in raw_files:
-        _ensure_doc_row(db, raw_path)
+        _ensure_doc_row(db, raw_path, department=department, knowledge_base_id=knowledge_base_id)
         doc = db.query(Document).filter(Document.filename == raw_path.name).first()
         if doc is None:
             continue
@@ -239,10 +289,15 @@ async def run_batch(db: Session) -> dict:
             success += 1
             continue
 
+        # Check if any KB is configured for upload-only path
+        from app.services.settings_service import get_knowledge_bases
+        kb_data = get_knowledge_bases(db)
+        has_any_kb = bool(kb_data.get("knowledge_bases"))
+
         if (
             doc.status == "indexed"
             and doc.file_hash == current_hash
-            and settings.dify_dataset_id
+            and has_any_kb
         ):
             upload_only_tasks.append((raw_path, doc))
             continue
@@ -406,7 +461,13 @@ def _write_failure_logs(
         ))
 
 
-def _ensure_doc_row(db: Session, raw_path: Path) -> None:
+def _ensure_doc_row(
+    db: Session,
+    raw_path: Path,
+    *,
+    department: str | None = None,
+    knowledge_base_id: str | None = None,
+) -> None:
     existing = db.query(Document).filter(Document.filename == raw_path.name).first()
     if existing is None:
         doc = Document(
@@ -415,6 +476,18 @@ def _ensure_doc_row(db: Session, raw_path: Path) -> None:
             file_hash=file_manager.file_hash(raw_path),
             raw_path=str(raw_path),
             status="raw",
+            department=department or "",
+            knowledge_base_id=knowledge_base_id or "",
         )
         db.add(doc)
         db.commit()
+    else:
+        changed = False
+        if department and not existing.department:
+            existing.department = department
+            changed = True
+        if knowledge_base_id and not existing.knowledge_base_id:
+            existing.knowledge_base_id = knowledge_base_id
+            changed = True
+        if changed:
+            db.commit()

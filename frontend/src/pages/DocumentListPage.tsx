@@ -15,9 +15,11 @@ import {
   Typography,
   Upload,
 } from 'antd';
+
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ApartmentOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
   EyeOutlined,
@@ -27,8 +29,9 @@ import {
   SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import type { DocumentItem } from '../api';
-import { docApi } from '../api';
+import type { DocumentItem, KnowledgeBase } from '../api';
+import { docApi, graphApi, settingsApi } from '../api';
+import type { KgDocumentGraph, KgGraphNode } from '../api/types';
 
 const STATUS_MAP: Record<string, { color: string; label: string }> = {
   raw: { color: 'default', label: '未处理' },
@@ -52,6 +55,15 @@ export default function DocumentListPage() {
   const [rawContent, setRawContent] = useState('');
   const [redactedContent, setRedactedContent] = useState('');
 
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [selectedKbId, setSelectedKbId] = useState<string>('');
+  const [defaultKbId, setDefaultKbId] = useState<string>('');
+
+  const [graphDrawerOpen, setGraphDrawerOpen] = useState(false);
+  const [graphDrawerTitle, setGraphDrawerTitle] = useState('');
+  const [graphData, setGraphData] = useState<KgDocumentGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+
   const fetchDocs = async (page = 1, size = 20) => {
     setLoading(true);
     try {
@@ -70,7 +82,22 @@ export default function DocumentListPage() {
     }
   };
 
-  useEffect(() => { fetchDocs(); }, []);
+  useEffect(() => { fetchDocs(); fetchKnowledgeBases(); }, []);
+
+  const fetchKnowledgeBases = async () => {
+    try {
+      const { data } = await settingsApi.getKnowledgeBases();
+      setKnowledgeBases(data.knowledge_bases || []);
+      if (data.default_id) {
+        setDefaultKbId(data.default_id);
+        if (data.knowledge_bases?.length > 0) {
+          setSelectedKbId(data.default_id);
+        }
+      }
+    } catch {
+      // Silently fail - knowledge bases are optional for display
+    }
+  };
 
   const handleTableChange = (pag: any) => {
     fetchDocs(pag.current, pag.pageSize);
@@ -100,7 +127,7 @@ export default function DocumentListPage() {
   const handleUpload = async (file: File) => {
     const dept = localStorage.getItem('department') || '';
     try {
-      await docApi.upload(file, dept);
+      await docApi.upload(file, dept, selectedKbId);
       message.success(`${file.name} 上传成功`);
       fetchDocs(pagination.current, pagination.pageSize);
     } catch {
@@ -134,12 +161,27 @@ export default function DocumentListPage() {
   const handleUploadToDify = async (doc: DocumentItem) => {
     try {
       message.loading({ content: '正在上传完整版与脱敏版到 Dify 知识库...', key: `dify-${doc.id}`, duration: 0 });
-      const { data } = await docApi.uploadToDify(doc.id);
+      const { data } = await docApi.uploadToDify(doc.id, selectedKbId || undefined);
       const count = data.uploaded?.length ?? 0;
       message.success({ content: `已上传 ${count} 个文件到 Dify 知识库`, key: `dify-${doc.id}` });
       fetchDocs(pagination.current, pagination.pageSize);
     } catch {
       message.error({ content: '上传 Dify 失败', key: `dify-${doc.id}` });
+    }
+  };
+
+  const handleViewGraph = async (doc: DocumentItem) => {
+    setGraphDrawerTitle(doc.filename);
+    setGraphDrawerOpen(true);
+    setGraphLoading(true);
+    setGraphData(null);
+    try {
+      const { data } = await graphApi.documentGraph(doc.id);
+      setGraphData(data);
+    } catch {
+      message.error('加载图谱失败');
+    } finally {
+      setGraphLoading(false);
     }
   };
 
@@ -260,6 +302,7 @@ export default function DocumentListPage() {
     </Space>
   );
 
+
   const columns = [
     { title: '文件名', dataIndex: 'filename', key: 'filename', ellipsis: true },
     {
@@ -271,6 +314,14 @@ export default function DocumentListPage() {
     },
     { title: '上传者', dataIndex: 'uploaded_by', key: 'uploaded_by', width: 100 },
     {
+      title: '知识库', key: 'knowledge_base', width: 130,
+      render: (_: unknown, record: DocumentItem) => {
+        if (!record.knowledge_base_id) return <span style={{ color: '#999' }}>-</span>;
+        const kb = knowledgeBases.find(k => k.id === record.knowledge_base_id);
+        return kb ? <Tag color="blue">{kb.name}</Tag> : <span style={{ color: '#999' }}>{record.knowledge_base_id}</span>;
+      },
+    },
+    {
       title: '状态', dataIndex: 'status', key: 'status', width: 100,
       render: (s: string) => {
         const m = STATUS_MAP[s] || { color: 'default', label: s };
@@ -279,7 +330,7 @@ export default function DocumentListPage() {
     },
     { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 180 },
     {
-      title: '操作', key: 'action', width: 300,
+      title: '操作', key: 'action', width: 260,
       render: (_: unknown, record: DocumentItem) => (
         <Space size="small">
           <Tooltip title="查看内容"><Button size="small" icon={<EyeOutlined />} onClick={() => handleView(record)} /></Tooltip>
@@ -291,6 +342,13 @@ export default function DocumentListPage() {
               icon={<CloudUploadOutlined />}
               disabled={record.status !== 'indexed' && record.status !== 'uploaded'}
               onClick={() => handleUploadToDify(record)}
+            />
+          </Tooltip>
+          <Tooltip title="查看知识图谱">
+            <Button
+              size="small"
+              icon={<ApartmentOutlined />}
+              onClick={() => handleViewGraph(record)}
             />
           </Tooltip>
           <Popconfirm
@@ -314,6 +372,17 @@ export default function DocumentListPage() {
         title="文档列表"
         extra={
           <Space>
+            <Select
+              placeholder="选择目标知识库"
+              style={{ width: 180 }}
+              value={selectedKbId || undefined}
+              onChange={(val) => setSelectedKbId(val || '')}
+              options={knowledgeBases.map(kb => ({
+                value: kb.id,
+                label: kb.name + (kb.id === defaultKbId ? ' (默认)' : ''),
+              }))}
+              allowClear
+            />
             <Upload
               accept=".md"
               showUploadList={false}
@@ -348,6 +417,17 @@ export default function DocumentListPage() {
         />
       </Card>
 
+      <Drawer
+        title={`知识图谱 · ${graphDrawerTitle}`}
+        width={640}
+        open={graphDrawerOpen}
+        onClose={() => setGraphDrawerOpen(false)}
+      >
+        {graphLoading && <Typography.Text type="secondary">正在加载…</Typography.Text>}
+        {!graphLoading && graphData && <DocumentGraphPanel data={graphData} />}
+        {!graphLoading && !graphData && <Empty description="该文档尚未构建图谱" />}
+      </Drawer>
+
       <Drawer title={drawerTitle} size="80%" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
         <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ flex: 1 }}>
@@ -365,5 +445,102 @@ export default function DocumentListPage() {
         </div>
       </Drawer>
     </>
+  );
+}
+
+const ENTITY_TYPE_LABEL: Record<string, string> = {
+  person: '人物',
+  customer: '客户',
+  project: '项目',
+  product: '产品',
+  org: '组织',
+  contract: '合同',
+  other: '其他',
+};
+
+const ENTITY_TYPE_COLOR: Record<string, string> = {
+  person: 'blue',
+  customer: 'gold',
+  project: 'green',
+  product: 'purple',
+  org: 'cyan',
+  contract: 'magenta',
+  other: 'default',
+};
+
+function DocumentGraphPanel({ data }: { data: KgDocumentGraph }) {
+  const rootNode = data.nodes.find((n) => n.type === 'document' && n.is_root);
+  const entityNodes = data.nodes.filter((n) => n.type === 'entity');
+  const relatedDocs = data.nodes.filter((n) => n.type === 'document' && !n.is_root);
+
+  if (!rootNode) {
+    return <Empty description="未找到文档节点" />;
+  }
+
+  return (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <section>
+        <Typography.Title level={5}>本文档提及的实体（{entityNodes.length}）</Typography.Title>
+        {entityNodes.length === 0 ? (
+          <Typography.Text type="secondary">（未抽取到实体）</Typography.Text>
+        ) : (
+          <Space wrap>
+            {entityNodes.map((n: KgGraphNode) => (
+              <Tag
+                color={ENTITY_TYPE_COLOR[n.entity_type || ''] || 'default'}
+                key={n.id}
+              >
+                {n.label}
+                <Typography.Text
+                  type="secondary"
+                  style={{ marginLeft: 4, fontSize: 11 }}
+                >
+                  ({ENTITY_TYPE_LABEL[n.entity_type || ''] || n.entity_type})
+                </Typography.Text>
+              </Tag>
+            ))}
+          </Space>
+        )}
+      </section>
+
+      <section>
+        <Typography.Title level={5}>相关文档（{relatedDocs.length}）</Typography.Title>
+        {relatedDocs.length === 0 ? (
+          <Typography.Text type="secondary">
+            （暂无共享实体数达到阈值的相关文档）
+          </Typography.Text>
+        ) : (
+          <div>
+            {relatedDocs.map((n: KgGraphNode) => {
+              const edge = data.edges.find(
+                (e) =>
+                  (e.source === n.id && e.target.startsWith('doc:')) ||
+                  (e.target === n.id && e.source.startsWith('doc:')),
+              );
+              return (
+                <div
+                  key={n.id}
+                  style={{
+                    padding: '8px 12px',
+                    borderBottom: '1px solid #f0f0f0',
+                  }}
+                >
+                  <Space>
+                    <Typography.Text strong>{n.label}</Typography.Text>
+                    {n.department && <Tag>{n.department}</Tag>}
+                    {edge?.type && (
+                      <Tag color="geekblue">{edge.type}</Tag>
+                    )}
+                    {edge?.weight !== undefined && (
+                      <Tag color="orange">共享实体 {edge.weight}</Tag>
+                    )}
+                  </Space>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </Space>
   );
 }

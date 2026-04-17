@@ -40,6 +40,7 @@ class DocumentOut(BaseModel):
     raw_path: str
     redacted_path: str
     index_path: str
+    knowledge_base_id: str
     created_at: str
     updated_at: str
 
@@ -109,6 +110,7 @@ def list_documents(
                 raw_path=d.raw_path,
                 redacted_path=d.redacted_path,
                 index_path=d.index_path,
+                knowledge_base_id=getattr(d, "knowledge_base_id", ""),
                 created_at=str(d.created_at or ""),
                 updated_at=str(d.updated_at or ""),
             )
@@ -121,6 +123,7 @@ def list_documents(
 async def upload_document(
     file: UploadFile = File(...),
     department: str = Query(""),
+    knowledge_base_id: str = Query(""),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
@@ -146,6 +149,7 @@ async def upload_document(
         existing.redacted_path = ""
         existing.index_path = ""
         existing.error_message = ""
+        existing.knowledge_base_id = knowledge_base_id
         db.commit()
         db.refresh(existing)
         doc_id = existing.id
@@ -159,6 +163,7 @@ async def upload_document(
             file_hash=h,
             raw_path=str(saved_path),
             status="raw",
+            knowledge_base_id=knowledge_base_id,
         )
         db.add(doc)
         db.commit()
@@ -256,6 +261,18 @@ async def trigger_index(
         doc.status = "indexed"
         doc.error_message = ""
         db.commit()
+
+        graph_block = index_doc.get("knowledge_graph")
+        if graph_block:
+            try:
+                from app.services.kg_service import save_graph
+                await save_graph(db, doc.id, graph_block)
+            except Exception as exc:
+                import logging as _l
+                _l.getLogger(__name__).warning(
+                    "KG persistence failed for doc_id=%s: %s", doc.id, exc,
+                )
+
         return index_doc
     except Exception as e:
         doc.status = "error"
@@ -267,6 +284,7 @@ async def trigger_index(
 @router.post("/{doc_id}/upload-to-dify")
 async def trigger_upload_to_dify(
     doc_id: int,
+    knowledge_base_id: str = Query(""),
     db: Session = Depends(get_db),
     _user: dict = Depends(get_current_user),
 ):
@@ -275,7 +293,12 @@ async def trigger_upload_to_dify(
     Filenames in Dify are differentiated by suffix:
       - full:     "报告.md"
       - redacted: "报告_redacted.md"
+
+    If knowledge_base_id is provided, upload to that specific KB.
+    Otherwise, use the KB associated with the document, or the default KB.
     """
+    from app.services.settings_service import get_dify_config
+
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -291,12 +314,23 @@ async def trigger_upload_to_dify(
     if "full" not in dify_meta_section:
         raise HTTPException(status_code=400, detail="索引中不存在 full 版本的 metadata")
 
+    # Resolve dataset_id: explicit param > doc's KB > default KB
+    if knowledge_base_id:
+        kb_config = get_dify_config(db, knowledge_base_id)
+    elif doc.knowledge_base_id:
+        kb_config = get_dify_config(db, doc.knowledge_base_id)
+    else:
+        kb_config = get_dify_config(db)
+
+    dataset_id = kb_config["dataset_id"] if kb_config else None
+
     results: list[dict] = []
 
     try:
         full_result = await upload_with_metadata(
             file_path=doc.raw_path,
             index_meta=dify_meta_section["full"],
+            dataset_id=dataset_id,
             upload_name=doc.filename,
         )
         results.append({"version": "full", **full_result})
@@ -355,6 +389,15 @@ def delete_document(
         for file_path in files_to_delete:
             if file_path and Path(file_path).exists():
                 os.remove(file_path)
+
+        from app.models.knowledge_graph import DocumentEntity, DocumentRelation
+        db.query(DocumentEntity).filter(
+            DocumentEntity.document_id == doc_id
+        ).delete(synchronize_session=False)
+        db.query(DocumentRelation).filter(
+            (DocumentRelation.src_doc_id == doc_id)
+            | (DocumentRelation.dst_doc_id == doc_id)
+        ).delete(synchronize_session=False)
 
         db.delete(doc)
         db.commit()

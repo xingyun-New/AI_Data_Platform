@@ -2,9 +2,11 @@ import React from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ConfigProvider, Layout, Menu, Typography, Button, theme } from 'antd';
 import {
+  ApartmentOutlined,
   FileTextOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
+  SettingOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
@@ -13,6 +15,8 @@ import LoginPage from './pages/LoginPage';
 import DocumentListPage from './pages/DocumentListPage';
 import RuleManagePage from './pages/RuleManagePage';
 import BatchMonitorPage from './pages/BatchMonitorPage';
+import SettingsPage from './pages/SettingsPage';
+import KnowledgeGraphPage from './pages/KnowledgeGraphPage';
 
 const { Sider, Content, Header } = Layout;
 
@@ -20,6 +24,8 @@ const MENU_ITEMS = [
   { key: '/documents', icon: <FileTextOutlined />, label: '文档管理' },
   { key: '/rules', icon: <SafetyCertificateOutlined />, label: '规则管理' },
   { key: '/batch', icon: <ThunderboltOutlined />, label: 'Batch 监控' },
+  { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: '知识图谱' },
+  { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ];
 
 function AppLayout() {
@@ -62,6 +68,8 @@ function AppLayout() {
             <Route path="/documents" element={<DocumentListPage />} />
             <Route path="/rules" element={<RuleManagePage />} />
             <Route path="/batch" element={<BatchMonitorPage />} />
+            <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/documents" replace />} />
           </Routes>
         </Content>

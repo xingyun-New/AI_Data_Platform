@@ -3,8 +3,10 @@ import {
   Button,
   Card,
   Descriptions,
+  Input,
   message,
   Modal,
+  Select,
   Space,
   Table,
   Tag,
@@ -14,8 +16,8 @@ import {
   ReloadOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
-import type { BatchFileLogItem, BatchSummary } from '../api';
-import { batchApi } from '../api';
+import type { BatchFileLogItem, BatchSummary, KnowledgeBase } from '../api';
+import { batchApi, settingsApi } from '../api';
 
 const STATUS_COLOR: Record<string, string> = {
   running: 'processing',
@@ -33,6 +35,11 @@ export default function BatchMonitorPage() {
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logs, setLogs] = useState<BatchFileLogItem[]>([]);
   const [logBatchId, setLogBatchId] = useState('');
+
+  const [batchDept, setBatchDept] = useState('');
+  const [batchKbId, setBatchKbId] = useState<string | undefined>(undefined);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [defaultKbId, setDefaultKbId] = useState('');
 
   const fetchHistory = async (page = 1, size = 20) => {
     setLoading(true);
@@ -56,14 +63,25 @@ export default function BatchMonitorPage() {
     setRunning(data.is_running);
   };
 
-  useEffect(() => { fetchHistory(); checkStatus(); }, []);
+  const fetchKnowledgeBases = async () => {
+    try {
+      const { data } = await settingsApi.getKnowledgeBases();
+      setKnowledgeBases(data.knowledge_bases || []);
+      if (data.default_id) setDefaultKbId(data.default_id);
+    } catch { /* optional */ }
+  };
+
+  useEffect(() => { fetchHistory(); checkStatus(); fetchKnowledgeBases(); }, []);
 
   const handleRun = async () => {
     setRunning(true);
     setRunResult(null);
     message.loading({ content: 'Batch 执行中...', key: 'batch', duration: 0 });
     try {
-      const { data } = await batchApi.run();
+      const params: Record<string, string> = {};
+      if (batchDept) params.department = batchDept;
+      if (batchKbId) params.knowledge_base_id = batchKbId;
+      const { data } = await batchApi.run(Object.keys(params).length ? params : undefined);
       setRunResult(data);
       message.success({ content: `Batch 完成: ${data.success ?? 0} 成功, ${data.fail ?? 0} 失败`, key: 'batch' });
       fetchHistory();
@@ -122,8 +140,26 @@ export default function BatchMonitorPage() {
         title="Batch 监控"
         extra={
           <Space>
+            <Input
+              placeholder="部门，如 CH70/CH73"
+              value={batchDept}
+              onChange={(e) => setBatchDept(e.target.value)}
+              style={{ width: 160 }}
+              allowClear
+            />
+            <Select
+              placeholder="选择知识库"
+              value={batchKbId}
+              onChange={setBatchKbId}
+              style={{ width: 180 }}
+              allowClear
+              options={knowledgeBases.map(kb => ({
+                value: kb.id,
+                label: kb.name + (kb.id === defaultKbId ? ' (默认)' : ''),
+              }))}
+            />
             <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={handleRun}>
-              {running ? '执行中...' : '手动执行 Batch'}
+              {running ? '执行中...' : '执行 Batch'}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={fetchHistory}>刷新</Button>
           </Space>

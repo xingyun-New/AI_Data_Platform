@@ -27,8 +27,17 @@ class BatchSummary(BaseModel):
 
 
 @router.post("/run")
-async def run_batch(db: Session = Depends(get_db), _user: dict = Depends(get_current_user)):
-    result = await batch_service.run_batch(db)
+async def run_batch(
+    department: str = Query(""),
+    knowledge_base_id: str = Query(""),
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    result = await batch_service.run_batch(
+        db,
+        department=department or None,
+        knowledge_base_id=knowledge_base_id or None,
+    )
     return result
 
 

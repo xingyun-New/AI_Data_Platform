@@ -25,6 +25,7 @@ class Document(Base):
     raw_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     redacted_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     index_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    knowledge_base_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

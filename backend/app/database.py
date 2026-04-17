@@ -53,6 +53,8 @@ def run_migrations() -> None:
         ("users", "section", "VARCHAR(200) NOT NULL DEFAULT ''"),
         ("documents", "section", "VARCHAR(200) NOT NULL DEFAULT ''"),
         ("documents", "uploaded_by", "VARCHAR(100) NOT NULL DEFAULT ''"),
+        ("documents", "knowledge_base_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("kg_entities", "embedding_dim", "INTEGER NOT NULL DEFAULT 0"),
     ]
     insp = inspect(engine)
     with engine.begin() as conn:
@@ -74,3 +76,30 @@ def run_migrations() -> None:
                 if not _index_exists(insp, "documents", index_name):
                     conn.execute(text(f"CREATE INDEX {index_name} ON documents {columns}"))
                     logger.info("Migration: added index %s", index_name)
+
+    # Create system_settings table if it doesn't exist
+    if not insp.has_table("system_settings"):
+        with engine.begin() as conn:
+            if _is_postgres:
+                conn.execute(text("""
+                    CREATE TABLE system_settings (
+                        id SERIAL PRIMARY KEY,
+                        key VARCHAR(64) NOT NULL UNIQUE,
+                        value TEXT NOT NULL DEFAULT '',
+                        category VARCHAR(32) NOT NULL DEFAULT 'general',
+                        path_mode VARCHAR(16),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE system_settings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        key VARCHAR(64) NOT NULL UNIQUE,
+                        value TEXT NOT NULL DEFAULT '',
+                        category VARCHAR(32) NOT NULL DEFAULT 'general',
+                        path_mode VARCHAR(16),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            logger.info("Migration: created system_settings table")

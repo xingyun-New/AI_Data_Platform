@@ -33,12 +33,13 @@ _POLL_INTERVAL = 2.0
 _POLL_MAX_ATTEMPTS = 120
 
 
-def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {settings.dify_api_key}"}
+def _headers(api_key: str | None = None) -> dict[str, str]:
+    key = api_key or settings.dify_api_key
+    return {"Authorization": f"Bearer {key}"}
 
 
-def _base_url() -> str:
-    return settings.dify_base_url.rstrip("/")
+def _base_url(base: str | None = None) -> str:
+    return (base or settings.dify_base_url).rstrip("/")
 
 
 def to_dify_metadata(index_meta: dict) -> dict[str, str]:
@@ -61,30 +62,30 @@ def to_dify_metadata(index_meta: dict) -> dict[str, str]:
     return meta
 
 
-async def list_metadata_fields(dataset_id: str) -> list[dict]:
+async def list_metadata_fields(dataset_id: str, api_key: str | None = None, base_url: str | None = None) -> list[dict]:
     """GET /datasets/{dataset_id}/metadata — return existing field definitions."""
-    url = f"{_base_url()}/datasets/{dataset_id}/metadata"
+    url = f"{_base_url(base_url)}/datasets/{dataset_id}/metadata"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers=_headers())
+        resp = await client.get(url, headers=_headers(api_key))
         resp.raise_for_status()
         return resp.json().get("doc_metadata", [])
 
 
-async def ensure_metadata_fields(dataset_id: str) -> dict[str, str]:
+async def ensure_metadata_fields(dataset_id: str, api_key: str | None = None, base_url: str | None = None) -> dict[str, str]:
     """Ensure all required metadata fields exist in the knowledge base.
 
     Returns a mapping of field_name → field_id for later use.
     """
-    existing = await list_metadata_fields(dataset_id)
+    existing = await list_metadata_fields(dataset_id, api_key, base_url)
     name_to_id: dict[str, str] = {f["name"]: f["id"] for f in existing}
 
-    create_url = f"{_base_url()}/datasets/{dataset_id}/metadata"
+    create_url = f"{_base_url(base_url)}/datasets/{dataset_id}/metadata"
     async with httpx.AsyncClient(timeout=30) as client:
         for field_def in DIFY_METADATA_FIELDS:
             if field_def["name"] not in name_to_id:
                 resp = await client.post(
                     create_url,
-                    headers=_headers(),
+                    headers=_headers(api_key),
                     json={"type": field_def["type"], "name": field_def["name"]},
                 )
                 resp.raise_for_status()
@@ -103,6 +104,8 @@ async def upload_document(
     indexing_technique: str = "high_quality",
     doc_form: str = "text_model",
     doc_language: str = "Chinese",
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Upload a file to Dify knowledge base.
 
@@ -119,7 +122,7 @@ async def upload_document(
         raise FileNotFoundError(f"File not found: {file_path}")
 
     dify_filename = upload_name or path.name
-    url = f"{_base_url()}/datasets/{dataset_id}/document/create-by-file"
+    url = f"{_base_url(base_url)}/datasets/{dataset_id}/document/create-by-file"
 
     data_payload = json.dumps({
         "indexing_technique": indexing_technique,
@@ -132,7 +135,7 @@ async def upload_document(
         with open(path, "rb") as f:
             resp = await client.post(
                 url,
-                headers=_headers(),
+                headers=_headers(api_key),
                 files={"file": (dify_filename, f, "text/markdown")},
                 data={"data": data_payload},
             )
@@ -154,17 +157,19 @@ async def wait_for_indexing(
     *,
     poll_interval: float = _POLL_INTERVAL,
     max_attempts: int = _POLL_MAX_ATTEMPTS,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Poll indexing status until completed or error.
 
     Returns the final status entry for the first document in the batch.
     Raises RuntimeError on timeout or indexing error.
     """
-    url = f"{_base_url()}/datasets/{dataset_id}/documents/{batch_id}/indexing-status"
+    url = f"{_base_url(base_url)}/datasets/{dataset_id}/documents/{batch_id}/indexing-status"
 
     async with httpx.AsyncClient(timeout=30) as client:
         for attempt in range(1, max_attempts + 1):
-            resp = await client.get(url, headers=_headers())
+            resp = await client.get(url, headers=_headers(api_key))
             resp.raise_for_status()
             entries = resp.json().get("data", [])
 
@@ -195,6 +200,8 @@ async def set_document_metadata(
     document_id: str,
     metadata_values: dict[str, str],
     field_name_to_id: dict[str, str],
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> None:
     """Set metadata values on a single Dify document.
 
@@ -240,6 +247,8 @@ async def upload_with_metadata(
     dataset_id: str | None = None,
     *,
     upload_name: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> dict:
     """Full pipeline: upload file → wait for indexing → set metadata.
 
@@ -248,6 +257,8 @@ async def upload_with_metadata(
         index_meta: The dify_metadata dict from index_generator (full or redacted).
         dataset_id: Override the default dataset. Falls back to settings.dify_dataset_id.
         upload_name: Override filename in Dify (e.g. "报告_redacted.md").
+        api_key: Override the default Dify API key.
+        base_url: Override the default Dify base URL.
 
     Returns:
         {"document_id": str, "batch": str, "name": str, "metadata": dict}
@@ -256,13 +267,13 @@ async def upload_with_metadata(
     if not ds_id:
         raise ValueError("dify_dataset_id is not configured")
 
-    field_map = await ensure_metadata_fields(ds_id)
-    upload_result = await upload_document(ds_id, file_path, upload_name=upload_name)
-    await wait_for_indexing(ds_id, upload_result["batch"])
+    field_map = await ensure_metadata_fields(ds_id, api_key, base_url)
+    upload_result = await upload_document(ds_id, file_path, upload_name=upload_name, api_key=api_key, base_url=base_url)
+    await wait_for_indexing(ds_id, upload_result["batch"], api_key=api_key, base_url=base_url)
 
     metadata_values = to_dify_metadata(index_meta)
     if upload_name:
         metadata_values["knowlege_db_name"] = upload_name
-    await set_document_metadata(ds_id, upload_result["document_id"], metadata_values, field_map)
+    await set_document_metadata(ds_id, upload_result["document_id"], metadata_values, field_map, api_key, base_url)
 
     return {**upload_result, "metadata": metadata_values}

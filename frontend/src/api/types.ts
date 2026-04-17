@@ -29,6 +29,7 @@ export interface DocumentItem {
   raw_path: string;
   redacted_path: string;
   index_path: string;
+  knowledge_base_id: string;
   created_at: string;
   updated_at: string;
 }
@@ -116,4 +117,95 @@ export interface PaginatedResponse<T> {
   page: number;
   size: number;
   items: T[];
+}
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  api_key: string;
+  base_url: string;
+  dataset_id: string;
+}
+
+export interface KnowledgeBasesResponse {
+  knowledge_bases: KnowledgeBase[];
+  default_id: string;
+}
+
+export interface SettingsGroup {
+  dify: Record<string, string>;
+  path: Record<string, string>;
+  general: Record<string, string>;
+}
+
+export interface SettingUpdatePayload {
+  dify: Record<string, string>;
+  path: Record<string, string>;
+}
+
+export interface ResolvedPath {
+  absolute_path: string;
+}
+
+export interface KgEntity {
+  id: number;
+  name: string;
+  entity_type: string;
+  aliases: string[];
+  mention_count: number;
+  created_at: string;
+}
+
+export interface KgStats {
+  entity_count: number;
+  document_entity_count: number;
+  document_relation_count: number;
+  entities_by_type: Record<string, number>;
+}
+
+export interface KgGraphNode {
+  id: string;
+  label: string;
+  type: 'document' | 'entity';
+  entity_type?: string;
+  department?: string;
+  mention_count?: number;
+  is_root?: boolean;
+}
+
+export interface KgGraphEdge {
+  source: string;
+  target: string;
+  type: string;
+  weight?: number;
+}
+
+export interface KgDocumentGraph {
+  nodes: KgGraphNode[];
+  edges: KgGraphEdge[];
+}
+
+export interface KgEntityDocument {
+  doc_id: number;
+  filename: string;
+  department: string;
+  relation_type: string;
+  status: string;
+}
+
+export interface KgRetrieveDoc {
+  doc_id: number;
+  filename: string;
+  knowledge_db_name: string;
+  department: string;
+  status: string;
+  score: number;
+  matched_entities: number[];
+}
+
+export interface KgRebuildResult {
+  total: number;
+  success: number;
+  failed: number;
+  errors: { doc_id: number; filename: string; error: string }[];
 }

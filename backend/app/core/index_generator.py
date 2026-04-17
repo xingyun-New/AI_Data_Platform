@@ -20,6 +20,7 @@ from app.models.index_rule import IndexRule
 logger = logging.getLogger(__name__)
 
 PROMPT_FILE = "index_generate.txt"
+GRAPH_PROMPT_FILE = "graph_extract.txt"
 
 
 def _build_index_rules_context(db: Session, department: str, section: str = "") -> str:
@@ -155,13 +156,27 @@ async def generate_index(
     full_content = read_file(Path(raw_path))
     redacted_content = read_redacted(filename)
 
+    async def _safe_graph_extract(content: str) -> dict:
+        """Extract KG entities; degrade gracefully on failure so indexing still succeeds."""
+        try:
+            return await call_ai_json(
+                GRAPH_PROMPT_FILE, content, temperature=0.1, max_tokens=4096,
+            )
+        except Exception as exc:
+            logger.warning("Graph extraction failed for %s: %s", filename, exc)
+            return {"entities": [], "document_relations": []}
+
     if redacted_content:
-        full_index, redacted_index = await asyncio.gather(
+        full_index, redacted_index, graph_data = await asyncio.gather(
             call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context),
             call_ai_json(PROMPT_FILE, redacted_content, extra_system=rules_context),
+            _safe_graph_extract(full_content),
         )
     else:
-        full_index = await call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context)
+        full_index, graph_data = await asyncio.gather(
+            call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context),
+            _safe_graph_extract(full_content),
+        )
         redacted_index = full_index.copy()
 
     ai_shared = full_index.get("shared_departments", [])
@@ -226,6 +241,16 @@ async def generate_index(
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    if isinstance(graph_data, dict) and (graph_data.get("entities") or graph_data.get("document_relations")):
+        index_doc["knowledge_graph"] = {
+            "entities": graph_data.get("entities") or [],
+            "document_relations": graph_data.get("document_relations") or [],
+        }
+
     write_index(stem, json.dumps(index_doc, ensure_ascii=False, indent=2))
-    logger.info("Generated index for %s (dept=%s, shared=%s)", filename, department, merged_shared)
+    logger.info(
+        "Generated index for %s (dept=%s, shared=%s, entities=%d)",
+        filename, department, merged_shared,
+        len(index_doc.get("knowledge_graph", {}).get("entities", [])),
+    )
     return index_doc
