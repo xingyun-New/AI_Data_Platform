@@ -41,6 +41,9 @@
 
 - 查询实体抽取失败 → 图召回返回空，没有向量兜底
 - 当前依赖 Dify 侧的条件分支做回退，无平台内原生支持
+- 查询端 LLM 实体分类不稳定：DB 里 `customer: osram` 会被 query LLM 标成 `org`，
+  `match_query_entities` 的类型过滤直接 miss 掉
+  - **本轮改动 4 解决（跨类型精确兜底）**
 
 ### 1.6 架构耦合与运维缺口
 
@@ -94,6 +97,36 @@ direct_score(doc) = Σ weight(e) for each matched entity e in doc
 
 **取舍**：选择并集（用户确认）而非智能合并/置信度驱动。代价是 `DocumentEntity`
 行会只增不减，需配套后续迭代的"定期清理"任务（见 §3.5）。
+
+### 改动 4：查询端跨类型精确兜底
+
+**文件**：`backend/app/services/kg_service.py`
+
+**背景**：诊断 `osram 是谁` 在前端命中 0 的实际运行结果：
+
+```
+LLM extracted entities: [ { "name": "osram", "type": "org" } ]
+Cross-type DB rows where LOWER(name)='osram':
+  id=75 type=customer name='osram' aliases='["欧司朗"]'
+match_query_entities returned: (empty)
+```
+
+Query 端 LLM 把 customer 误判成 org，类型过滤直接 miss。
+
+**内容**：
+
+- 新增 `_exact_match_entity_any_type(db, name)`：不带类型过滤的 name/alias 精确匹配，
+  按 `mention_count DESC, id ASC` 排序取最"主流"的一个，处理跨类型歧义
+- `match_query_entities` 调整匹配顺序：
+  1. 同类型精确（原路径）
+  2. **跨类型精确（新增兜底）**
+  3. 同类型向量相似度
+
+**刻意不做**：跨类型向量兜底。embeddings 是基于 `{type}: {name}` 计算的，
+跨类型向量匹配会语义漂移，引入假阳性。
+
+**副作用**：同名跨类型实体（罕见）会命中 `mention_count` 最高的那个；触发时
+会记 `INFO` 日志。
 
 ---
 
@@ -195,4 +228,5 @@ direct_score(doc) = Σ weight(e) for each matched entity e in doc
 
 ## 六、版本
 
-- **2026-04-19**：创建文档，落地三星优先级改动
+- **2026-04-19**：创建文档，落地三星优先级改动（改动 1-3）
+- **2026-04-19**：追加改动 4 —— 查询端跨类型精确兜底（诊断 `osram 是谁` 零命中后补）

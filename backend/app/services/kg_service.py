@@ -154,6 +154,46 @@ def _exact_match_entity(db: Session, entity_type: str, name: str) -> Entity | No
     return None
 
 
+def _exact_match_entity_any_type(db: Session, name: str) -> Entity | None:
+    """Cross-type exact-match fallback for query-side resolution.
+
+    The query-side LLM occasionally misclassifies proper nouns (e.g. the
+    customer "osram" coming back typed as ``org``), which would otherwise
+    make ``_exact_match_entity`` miss and zero-out retrieval. This helper
+    mirrors the same-type exact path but drops the ``entity_type`` filter
+    and deterministically picks the most-referenced row when the name is
+    ambiguous across types.
+
+    Intentionally kept as an exact-name / exact-alias match only (no vector
+    similarity): cross-type vector matching would wander semantically
+    because our embeddings are computed over ``{type}: {name}``.
+    """
+    name_n = _normalize_name(name)
+    if not name_n:
+        return None
+
+    row = (
+        db.query(Entity)
+        .filter(func.lower(Entity.name) == name_n)
+        .order_by(Entity.mention_count.desc(), Entity.id.asc())
+        .first()
+    )
+    if row is not None:
+        return row
+
+    candidates = (
+        db.query(Entity)
+        .filter(func.lower(Entity.aliases).contains(name_n))
+        .order_by(Entity.mention_count.desc(), Entity.id.asc())
+        .all()
+    )
+    for c in candidates:
+        folded = [_normalize_name(a) for a in _parse_aliases(c.aliases)]
+        if name_n in folded:
+            return c
+    return None
+
+
 def _merge_entity(
     db: Session,
     existing: Entity,
@@ -525,8 +565,23 @@ async def match_query_entities(
         hit = _exact_match_entity(db, etype, name)
         if hit is not None:
             matched.append(hit)
-        else:
-            pending.append((idx, {"name": name, "type": etype}))
+            continue
+
+        # Cross-type exact fallback: LLM query-side classification is
+        # frequently wrong on proper nouns; if the exact name/alias exists
+        # under any type, prefer that over dropping the candidate.
+        cross = _exact_match_entity_any_type(db, name)
+        if cross is not None:
+            if cross.entity_type != etype:
+                logger.info(
+                    "Query entity '%s' classified as '%s' by LLM but matched "
+                    "DB row id=%d type='%s' via cross-type fallback",
+                    name, etype, cross.id, cross.entity_type,
+                )
+            matched.append(cross)
+            continue
+
+        pending.append((idx, {"name": name, "type": etype}))
 
     if pending:
         try:
