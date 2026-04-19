@@ -45,6 +45,8 @@ ENV/
 # Database
 *.db
 *.db-journal
+*.db.bak*
+*.bak
 
 # OS
 .DS_Store

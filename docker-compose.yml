@@ -50,7 +50,7 @@ services:
       dockerfile: Dockerfile
     container_name: ai_data_platform_frontend
     ports:
-      - "80:80"
+      - "9000:80"
     depends_on:
       - backend
     networks:

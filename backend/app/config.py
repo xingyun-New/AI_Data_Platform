@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     kg_entity_merge_threshold: float = 0.88
     kg_min_shared_entities: int = 2
     kg_max_edges_per_doc: int = 50
+    kg_entity_blacklist: str = ""
+    """Comma-separated entity names that should be dropped at extraction and
+    query time (e.g. "本公司,领导,相关方"). Values are casefold-compared."""
     # Lightweight model used only for query-time entity extraction (NER on the
     # user question). Kept separate from dashscope_model so the heavy pipeline
     # (document-level extraction, index generation) can still use a stronger
@@ -80,6 +83,15 @@ class Settings(BaseSettings):
         """Resolve a path relative to the backend/ directory."""
         base = Path(__file__).resolve().parent.parent
         return (base / relative).resolve()
+
+    @property
+    def kg_entity_blacklist_set(self) -> set[str]:
+        """Parsed blacklist as a set of casefolded names for O(1) lookup."""
+        return {
+            s.strip().casefold()
+            for s in (self.kg_entity_blacklist or "").split(",")
+            if s.strip()
+        }
 
 
 settings = Settings()

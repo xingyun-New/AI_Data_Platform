@@ -161,7 +161,7 @@ export default function BatchMonitorPage() {
             <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={handleRun}>
               {running ? '执行中...' : '执行 Batch'}
             </Button>
-            <Button icon={<ReloadOutlined />} onClick={fetchHistory}>刷新</Button>
+            <Button icon={<ReloadOutlined />} onClick={() => fetchHistory()}>刷新</Button>
           </Space>
         }
       >

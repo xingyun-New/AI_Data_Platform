@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import Counter
 from typing import Any
 
@@ -39,6 +40,16 @@ _VALID_ENTITY_TYPES = {
     "person", "customer", "project", "product", "org", "contract", "other",
 }
 _VALID_REL_TYPES = {"mentions", "authored_by", "about", "belongs_to"}
+
+
+def _is_blacklisted(name: str) -> bool:
+    """True if the (already-normalized) entity name is in the configured blacklist."""
+    if not name:
+        return True
+    blacklist = settings.kg_entity_blacklist_set
+    if not blacklist:
+        return False
+    return name in blacklist
 
 
 # ---- Helpers ----------------------------------------------------------------
@@ -208,11 +219,14 @@ async def normalize_entities(
         etype = (c.get("type") or "other").strip().lower()
         if not name:
             continue
+        if _is_blacklisted(name):
+            logger.debug("Skipping blacklisted entity: %s", name)
+            continue
         if etype not in _VALID_ENTITY_TYPES:
             etype = "other"
         aliases = [
             _normalize_name(a) for a in (c.get("aliases") or [])
-            if _normalize_name(a)
+            if _normalize_name(a) and not _is_blacklisted(_normalize_name(a))
         ]
         cleaned.append({"name": name, "type": etype, "aliases": aliases})
 
@@ -275,9 +289,15 @@ def _write_document_entities(
     entity_map: list[tuple[int, dict[str, Any]]],
     document_relations: list[dict[str, Any]],
 ) -> list[int]:
-    """Write kg_document_entities rows (upserted on unique triple).
+    """Upsert kg_document_entities rows using a UNION strategy (no deletion).
 
-    Returns the list of entity_ids actually linked to this document.
+    Behaviour:
+      * Existing ``(doc_id, entity_id, relation_type)`` rows are kept as-is,
+        protecting the graph against transient LLM under-extraction.
+      * New triples produced by this extraction run are inserted if not already
+        present (relies on the ``uq_doc_entity_rel`` unique constraint).
+      * The returned list is the UNION of all entity ids linked to this document
+        (old + new), so edge rebuilding is based on the complete picture.
     """
     name_to_id: dict[str, int] = {}
     for ent_id, c in entity_map:
@@ -285,7 +305,7 @@ def _write_document_entities(
         for alias in c.get("aliases") or []:
             name_to_id[alias] = ent_id
 
-    rel_by_entity: dict[int, str] = {}
+    incoming_rels: dict[int, str] = {}
     for r in document_relations or []:
         ent_name = _normalize_name(r.get("entity_name", ""))
         rel_type = (r.get("relation") or "mentions").strip().lower()
@@ -293,22 +313,40 @@ def _write_document_entities(
             rel_type = "mentions"
         ent_id = name_to_id.get(ent_name)
         if ent_id is not None:
-            rel_by_entity[ent_id] = rel_type
+            incoming_rels[ent_id] = rel_type
 
     for ent_id, _c in entity_map:
-        rel_by_entity.setdefault(ent_id, "mentions")
+        incoming_rels.setdefault(ent_id, "mentions")
 
-    db.query(DocumentEntity).filter(DocumentEntity.document_id == doc_id).delete()
+    existing_rows = (
+        db.query(DocumentEntity.entity_id, DocumentEntity.relation_type)
+        .filter(DocumentEntity.document_id == doc_id)
+        .all()
+    )
+    existing_triples: set[tuple[int, str]] = {(eid, rel) for eid, rel in existing_rows}
+    existing_entity_ids: set[int] = {eid for eid, _ in existing_rows}
 
-    for ent_id, rel_type in rel_by_entity.items():
+    inserted = 0
+    for ent_id, rel_type in incoming_rels.items():
+        if (ent_id, rel_type) in existing_triples:
+            continue
         db.add(DocumentEntity(
             document_id=doc_id,
             entity_id=ent_id,
             relation_type=rel_type,
             confidence=1.0,
         ))
+        existing_triples.add((ent_id, rel_type))
+        existing_entity_ids.add(ent_id)
+        inserted += 1
+
     db.flush()
-    return list(rel_by_entity.keys())
+    if inserted:
+        logger.debug(
+            "KG upsert doc_id=%s inserted=%d kept=%d total_entities=%d",
+            doc_id, inserted, len(existing_rows), len(existing_entity_ids),
+        )
+    return list(existing_entity_ids)
 
 
 def _dominant_relation_type(db: Session, shared_entity_ids: list[int]) -> str:
@@ -479,6 +517,8 @@ async def match_query_entities(
         etype = (c.get("type") or "other").strip().lower()
         if not name:
             continue
+        if _is_blacklisted(name):
+            continue
         if etype not in _VALID_ENTITY_TYPES:
             etype = "other"
 
@@ -512,6 +552,42 @@ async def match_query_entities(
     return deduped
 
 
+def _compute_entity_idf(
+    db: Session,
+    entity_ids: list[int],
+) -> dict[int, float]:
+    """Return {entity_id: idf_weight} where idf = 1 / log(1 + df).
+
+    ``df`` is the number of distinct documents mentioning the entity in
+    ``kg_document_entities``. Rare entities (low df) get high weight; "star"
+    noise entities (high df) get their influence naturally damped.
+
+    Entities absent from the inverted index default to df=0 -> weight=1/log(1)=inf,
+    so we floor df at 1 (effective weight ~1.44).
+    """
+    if not entity_ids:
+        return {}
+
+    placeholders = ",".join([f":e{i}" for i in range(len(entity_ids))])
+    params = {f"e{i}": eid for i, eid in enumerate(entity_ids)}
+
+    sql = text(
+        f"""
+        SELECT entity_id, COUNT(DISTINCT document_id) AS df
+        FROM kg_document_entities
+        WHERE entity_id IN ({placeholders})
+        GROUP BY entity_id
+        """
+    )
+    rows = db.execute(sql, params).all()
+
+    df_map: dict[int, int] = {eid: 1 for eid in entity_ids}
+    for entity_id, df in rows:
+        df_map[entity_id] = max(1, int(df))
+
+    return {eid: 1.0 / math.log(1 + df) for eid, df in df_map.items()}
+
+
 def retrieve_by_entities(
     db: Session,
     entity_ids: list[int],
@@ -522,9 +598,14 @@ def retrieve_by_entities(
     """Score documents by how well they match the given entity set.
 
     Scoring:
-        direct_score = number of matched entities mentioned in the doc
-        expansion_score = sum over (related_doc edge weights) for 1-hop neighbours,
-                          weighted by 0.5 to rank them below direct hits
+        direct_score(doc) = sum of IDF weights for each matched entity in doc
+                            where weight(entity) = 1 / log(1 + df(entity))
+        expansion_score   = sum over (related_doc edge weights) for 1-hop neighbours,
+                            weighted by 0.5 to rank them below direct hits
+
+    IDF weighting ensures rare/specific entities (e.g. a contract number) dominate
+    the score over noisy high-frequency entities (e.g. "本公司"). The edge weight
+    in kg_document_relations is kept as-is (it is a count of shared entities).
 
     Returns a list of dicts sorted by score descending, capped at top_k.
     """
@@ -533,29 +614,24 @@ def retrieve_by_entities(
 
     from app.models.document import Document  # local import to avoid cycle
 
-    direct_hits_sql = text(
+    idf_weights = _compute_entity_idf(db, entity_ids)
+
+    placeholders = ",".join([f":e{i}" for i in range(len(entity_ids))])
+    params = {f"e{i}": eid for i, eid in enumerate(entity_ids)}
+    detail_sql = text(
         f"""
-        SELECT document_id, COUNT(*) AS hits
+        SELECT document_id, entity_id
         FROM kg_document_entities
-        WHERE entity_id IN ({",".join([f":e{i}" for i in range(len(entity_ids))])})
-        GROUP BY document_id
+        WHERE entity_id IN ({placeholders})
         """
     )
-    params = {f"e{i}": eid for i, eid in enumerate(entity_ids)}
-    direct_rows = db.execute(direct_hits_sql, params).all()
+    detail_rows = db.execute(detail_sql, params).all()
 
     scores: dict[int, float] = {}
     matched_entities_per_doc: dict[int, set[int]] = {}
-    for doc_id, hits in direct_rows:
-        scores[doc_id] = scores.get(doc_id, 0.0) + float(hits)
-
-    doc_entity_rows = db.query(
-        DocumentEntity.document_id, DocumentEntity.entity_id,
-    ).filter(
-        DocumentEntity.entity_id.in_(entity_ids),
-        DocumentEntity.document_id.in_(scores.keys()) if scores else DocumentEntity.document_id.is_(None),
-    ).all() if scores else []
-    for doc_id, ent_id in doc_entity_rows:
+    for doc_id, ent_id in detail_rows:
+        weight = idf_weights.get(ent_id, 1.0)
+        scores[doc_id] = scores.get(doc_id, 0.0) + weight
         matched_entities_per_doc.setdefault(doc_id, set()).add(ent_id)
 
     if expand_one_hop and scores:
