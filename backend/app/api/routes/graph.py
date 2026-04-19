@@ -294,6 +294,7 @@ async def rebuild(
                     graph_block = await call_ai_json(
                         GRAPH_PROMPT_FILE, content,
                         temperature=0.1, max_tokens=4096,
+                        chunk_strategy="graph_merge",
                     )
                 except Exception as exc:
                     raise RuntimeError(f"graph-extract LLM 失败: {exc}") from exc

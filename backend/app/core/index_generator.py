@@ -193,21 +193,30 @@ async def generate_index(
         """Extract KG entities; degrade gracefully on failure so indexing still succeeds."""
         try:
             return await call_ai_json(
-                GRAPH_PROMPT_FILE, content, temperature=0.1, max_tokens=4096,
+                GRAPH_PROMPT_FILE, content,
+                temperature=0.1, max_tokens=4096,
+                chunk_strategy="graph_merge",
             )
         except Exception as exc:
             logger.warning("Graph extraction failed for %s: %s", filename, exc)
             return {"entities": [], "document_relations": []}
 
+    # Index generation needs *global* context (purpose/summary/keywords are
+    # about the whole document), so we force a single AI call regardless of
+    # document size. Qwen-plus's 128k context window can swallow megabytes of
+    # text before we'd need to worry about truncation.
     if redacted_content:
         full_index, redacted_index, graph_data = await asyncio.gather(
-            call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context),
-            call_ai_json(PROMPT_FILE, redacted_content, extra_system=rules_context),
+            call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context,
+                         chunk_strategy="none"),
+            call_ai_json(PROMPT_FILE, redacted_content, extra_system=rules_context,
+                         chunk_strategy="none"),
             _safe_graph_extract(full_content),
         )
     else:
         full_index, graph_data = await asyncio.gather(
-            call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context),
+            call_ai_json(PROMPT_FILE, full_content, extra_system=rules_context,
+                         chunk_strategy="none"),
             _safe_graph_extract(full_content),
         )
         redacted_index = full_index.copy()

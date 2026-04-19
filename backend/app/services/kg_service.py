@@ -534,6 +534,7 @@ async def extract_query_entities(query: str) -> list[dict[str, Any]]:
             temperature=0.0,
             max_tokens=512,
             model=settings.kg_query_model,
+            chunk_strategy="none",
         )
     except Exception as exc:
         logger.warning("Query entity extraction failed: %s", exc)

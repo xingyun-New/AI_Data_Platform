@@ -263,17 +263,49 @@ async def call_ai_json(
     temperature: float = 0.05,
     max_tokens: int = 4096,
     model: str | None = None,
+    chunk_strategy: str = "concat",
 ) -> dict:
     """Call AI and parse the response as JSON.
 
-    For large documents (>=10KB), splits into chunks and processes them
-    sequentially (desensitization is order-dependent).
+    ``chunk_strategy`` controls what happens when the document exceeds
+    ``LARGE_DOC_THRESHOLD``:
+
+    * ``"concat"`` (default): fan-out to N parallel AI calls and concat the
+      ``redacted_content`` string fields — the historical behavior tuned for
+      the desensitization prompt, which is order-preserving and chunk-local.
+    * ``"none"``: skip chunking entirely; send the full document in one call.
+      Use this for prompts that need *global* context (e.g. index generation
+      where ``summary``/``purpose`` only make sense over the entire doc).
+    * ``"graph_merge"``: fan-out to N parallel AI calls and merge per-chunk
+      ``entities`` / ``document_relations`` arrays with dedup, so the
+      knowledge-graph extraction prompt can scale to large documents without
+      losing entity coverage.
+
+    Picking the wrong strategy is a correctness bug — the old code hard-coded
+    ``concat`` so any large document routed through ``index_generate.txt`` or
+    ``graph_extract.txt`` silently lost all their structured output (the
+    merge function only looked for ``redacted_content`` and threw everything
+    else away).
     """
     content_len = len(user_content)
 
-    # For large documents, use chunked processing
-    if content_len >= LARGE_DOC_THRESHOLD:
-        return await _call_ai_json_chunked(
+    # Short-circuit: force single-call mode regardless of document size. This
+    # is safe for prompts whose inputs fit comfortably into the model's
+    # context window (index generation, query-side NER).
+    if chunk_strategy == "none" or content_len < LARGE_DOC_THRESHOLD:
+        raw = await call_ai(
+            prompt_file,
+            user_content,
+            extra_system=extra_system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            model=model,
+        )
+        return _extract_json_from_response(raw)
+
+    if chunk_strategy == "concat":
+        return await _call_ai_json_chunked_concat(
             prompt_file, user_content,
             extra_system=extra_system,
             temperature=temperature,
@@ -281,41 +313,42 @@ async def call_ai_json(
             model=model,
         )
 
-    # Small document: single call with JSON mode
-    raw = await call_ai(
-        prompt_file,
-        user_content,
-        extra_system=extra_system,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-        model=model,
+    if chunk_strategy == "graph_merge":
+        return await _call_ai_json_chunked_graph(
+            prompt_file, user_content,
+            extra_system=extra_system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+        )
+
+    raise ValueError(
+        f"Unknown chunk_strategy={chunk_strategy!r}. "
+        "Expected one of: 'concat', 'none', 'graph_merge'."
     )
-    return _extract_json_from_response(raw)
 
 
-async def _call_ai_json_chunked(
+async def _process_chunks_parallel(
     prompt_file: str,
-    user_content: str,
+    chunks: list[str],
     *,
-    extra_system: str = "",
-    temperature: float = 0.05,
-    max_tokens: int = 4096,
-    model: str | None = None,
-) -> dict:
-    """Process large document in chunks for desensitization in PARALLEL.
+    extra_system: str,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+) -> list[dict | Exception]:
+    """Fan out one AI call per chunk via asyncio.gather.
 
-    Each chunk is processed independently via asyncio.gather(),
-    and the results are merged back in order.
+    Returns a list aligned with ``chunks`` where each entry is either the
+    parsed-JSON dict or the Exception raised for that chunk. Callers decide
+    how to merge / fall back.
     """
-    chunks = _split_into_chunks(user_content)
     logger.info(
         "Large document (%d chars) split into %d chunks, processing in parallel",
-        len(user_content), len(chunks),
+        sum(len(c) for c in chunks), len(chunks),
     )
 
-    async def _process_chunk(index: int, chunk: str) -> dict:
-        """Process a single chunk and return the result with its index."""
+    async def _one(index: int, chunk: str) -> dict:
         logger.info("Processing chunk %d/%d (%d chars)", index + 1, len(chunks), len(chunk))
         raw = await call_ai(
             prompt_file,
@@ -326,48 +359,58 @@ async def _call_ai_json_chunked(
             response_format={"type": "json_object"},
             model=model,
         )
-        result = _extract_json_from_response(raw)
-        return {
-            "index": index,
-            "content": result.get("redacted_content", chunk),
-            "total_changes": result.get("report", {}).get("total_changes", 0),
-            "changes": result.get("report", {}).get("changes", []),
-        }
+        return _extract_json_from_response(raw)
 
-    # Parallel processing: all chunks sent to AI concurrently
-    tasks = [_process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [_one(i, chunk) for i, chunk in enumerate(chunks)]
+    return await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Handle results: successful ones + fallback for failed ones
-    all_results = []
+
+async def _call_ai_json_chunked_concat(
+    prompt_file: str,
+    user_content: str,
+    *,
+    extra_system: str = "",
+    temperature: float = 0.05,
+    max_tokens: int = 4096,
+    model: str | None = None,
+) -> dict:
+    """Chunked strategy for the desensitization prompt.
+
+    Each chunk returns ``{redacted_content, report: {total_changes, changes}}``;
+    we concat the content strings in original order and sum the reports.
+    """
+    chunks = _split_into_chunks(user_content)
+    results = await _process_chunks_parallel(
+        prompt_file, chunks,
+        extra_system=extra_system, temperature=temperature,
+        max_tokens=max_tokens, model=model,
+    )
+
+    merged: list[tuple[int, str, int, list]] = []
     for i, r in enumerate(results):
         if isinstance(r, Exception):
             logger.warning(
                 "Chunk %d processing failed (%s), using original content as fallback",
                 i, str(r)[:200],
             )
-            # Fallback: use original chunk content, report no changes
-            all_results.append({
-                "index": i,
-                "content": chunks[i],
-                "total_changes": 0,
-                "changes": [],
-            })
+            merged.append((i, chunks[i], 0, []))
         else:
-            all_results.append(r)
+            merged.append((
+                i,
+                r.get("redacted_content", chunks[i]),
+                r.get("report", {}).get("total_changes", 0),
+                r.get("report", {}).get("changes", []),
+            ))
 
-    # Sort by index to maintain original order
-    all_results.sort(key=lambda x: x["index"])
-
-    total_changes = sum(r["total_changes"] for r in all_results)
-    all_changes = [c for r in all_results for c in r["changes"]]
-    merged_content = "".join(r["content"] for r in all_results)
+    merged.sort(key=lambda x: x[0])
+    total_changes = sum(m[2] for m in merged)
+    all_changes = [c for m in merged for c in m[3]]
+    merged_content = "".join(m[1] for m in merged)
 
     logger.info(
-        "Chunked parallel processing complete: %d chunks, total_changes=%d",
-        len(all_results), total_changes,
+        "Chunked parallel processing complete (strategy=concat): %d chunks, total_changes=%d",
+        len(merged), total_changes,
     )
-
     return {
         "redacted_content": merged_content,
         "report": {
@@ -375,3 +418,93 @@ async def _call_ai_json_chunked(
             "changes": all_changes,
         },
     }
+
+
+def _merge_graph_chunk_results(results: list[dict | Exception]) -> dict:
+    """Union-merge per-chunk {entities, document_relations} payloads.
+
+    * Entities deduped on ``(name_casefold, type)`` with alias-union on hits;
+      ``mention_count`` is intentionally *not* summed here — that counter is
+      owned by ``kg_service.save_graph`` once the entity is matched against
+      the canonical DB row. Keeping this merge dedup-only preserves the
+      semantic "one observation per document" invariant.
+    * document_relations are deduped on ``(entity_name_casefold, relation)``.
+    * Failed chunks are logged and silently dropped — for graph extraction a
+      partial graph is strictly better than an empty one, and falling back to
+      raw text (the old behavior) was meaningless here.
+    """
+    merged_entities: dict[tuple[str, str], dict] = {}
+    merged_rels: dict[tuple[str, str], dict] = {}
+
+    ok_chunks = 0
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.warning(
+                "Graph chunk %d failed (%s); skipping (partial graph)",
+                i, str(r)[:200],
+            )
+            continue
+        ok_chunks += 1
+
+        for ent in r.get("entities") or []:
+            name = (ent.get("name") or "").strip()
+            etype = (ent.get("type") or "other").strip().lower() or "other"
+            if not name:
+                continue
+            key = (name.casefold(), etype)
+            existing = merged_entities.get(key)
+            if existing is None:
+                merged_entities[key] = {
+                    "name": name,
+                    "type": etype,
+                    "aliases": list(dict.fromkeys(ent.get("aliases") or [])),
+                }
+            else:
+                for a in ent.get("aliases") or []:
+                    if a and a not in existing["aliases"]:
+                        existing["aliases"].append(a)
+
+        for rel in r.get("document_relations") or []:
+            ent_name = (rel.get("entity_name") or "").strip()
+            rtype = (rel.get("relation") or "mentions").strip().lower() or "mentions"
+            if not ent_name:
+                continue
+            key = (ent_name.casefold(), rtype)
+            if key not in merged_rels:
+                merged_rels[key] = {
+                    "entity_name": ent_name,
+                    "relation": rtype,
+                }
+
+    logger.info(
+        "Chunked parallel processing complete (strategy=graph_merge): "
+        "%d/%d chunks ok, entities=%d, document_relations=%d",
+        ok_chunks, len(results), len(merged_entities), len(merged_rels),
+    )
+    return {
+        "entities": list(merged_entities.values()),
+        "document_relations": list(merged_rels.values()),
+    }
+
+
+async def _call_ai_json_chunked_graph(
+    prompt_file: str,
+    user_content: str,
+    *,
+    extra_system: str = "",
+    temperature: float = 0.05,
+    max_tokens: int = 4096,
+    model: str | None = None,
+) -> dict:
+    """Chunked strategy for the graph-extract prompt.
+
+    Each chunk returns ``{entities, document_relations}``; we union-merge
+    these across chunks with dedup so large documents keep full coverage.
+    """
+    chunks = _split_into_chunks(user_content)
+    results = await _process_chunks_parallel(
+        prompt_file, chunks,
+        extra_system=extra_system, temperature=temperature,
+        max_tokens=max_tokens, model=model,
+    )
+    return _merge_graph_chunk_results(results)

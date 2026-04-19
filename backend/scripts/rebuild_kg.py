@@ -145,6 +145,7 @@ async def _load_or_extract_graph(
         fresh = await call_ai_json(
             GRAPH_PROMPT_FILE, content,
             temperature=0.1, max_tokens=4096,
+            chunk_strategy="graph_merge",
         )
     except Exception as exc:
         logger.error("LLM graph-extract failed for doc_id=%s: %s", doc.id, exc)
