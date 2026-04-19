@@ -185,6 +185,24 @@ async def _process_one_file(
                     "KG persistence failed for %s (continuing): %s", raw_path.name, exc,
                 )
 
+        # Step 2c: persist index-rerank embedding onto the Document row so the
+        # KG retrieval pipeline can do topic-level rerank without re-embedding.
+        rerank_vec = index_doc.get("_index_embedding") or []
+        if rerank_vec and doc_id and db is not None:
+            try:
+                from app.core.embedding_service import pack_vector
+                from app.models.document import Document
+                doc_row = db.get(Document, doc_id)
+                if doc_row is not None:
+                    doc_row.index_embedding = pack_vector(rerank_vec)
+                    doc_row.index_embedding_dim = len(rerank_vec)
+                    db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "Index-rerank embedding persistence failed for %s: %s",
+                    raw_path.name, exc,
+                )
+
         # Step 3: upload to Dify
         kb_id = None
         if db and result.doc_id:

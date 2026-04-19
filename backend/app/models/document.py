@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, Integer, String, Text, func
+from sqlalchemy import DateTime, Index, Integer, LargeBinary, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -27,6 +27,15 @@ class Document(Base):
     index_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
     knowledge_base_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Topic-level embedding of the document's index (purpose/summary/keywords/...).
+    # Used by the KG retrieval pipeline to rerank entity-matched candidates
+    # against the user query at the "what is this document about" granularity.
+    index_embedding: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
+        nullable=True,
+        comment="float32 vector packed as bytes; None until first embed",
+    )
+    index_embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(),

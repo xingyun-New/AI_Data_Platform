@@ -14,6 +14,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.ai_service import call_ai_json
+from app.core.embedding_service import embed_texts
 from app.core.file_manager import read_file, read_redacted, write_index
 from app.models.index_rule import IndexRule
 
@@ -21,6 +22,38 @@ logger = logging.getLogger(__name__)
 
 PROMPT_FILE = "index_generate.txt"
 GRAPH_PROMPT_FILE = "graph_extract.txt"
+
+
+def build_index_rerank_text(index_block: dict) -> str:
+    """Build the text used to embed a document for topic-level rerank.
+
+    Concatenates the fields that describe *what the document is about*
+    (purpose / summary / keywords / scenarios) rather than its surface content.
+    This is intentionally decoupled from the raw document text: the index is
+    already a high-quality LLM-authored summary, so embedding it gives us a
+    clean "topic signature" that is cheap to compare against a user query.
+    """
+    if not isinstance(index_block, dict):
+        return ""
+
+    parts: list[str] = []
+    purpose = (index_block.get("purpose") or "").strip()
+    if purpose:
+        parts.append(f"用途: {purpose}")
+
+    summary = (index_block.get("summary") or "").strip()
+    if summary:
+        parts.append(f"摘要: {summary}")
+
+    keywords = index_block.get("keywords") or []
+    if isinstance(keywords, list) and keywords:
+        parts.append("关键词: " + ", ".join(str(k) for k in keywords if k))
+
+    scenarios = index_block.get("scenarios") or []
+    if isinstance(scenarios, list) and scenarios:
+        parts.append("场景: " + "; ".join(str(s) for s in scenarios if s))
+
+    return "\n".join(parts)
 
 
 def _build_index_rules_context(db: Session, department: str, section: str = "") -> str:
@@ -248,9 +281,28 @@ async def generate_index(
         }
 
     write_index(stem, json.dumps(index_doc, ensure_ascii=False, indent=2))
+
+    # Compute the topic-signature embedding after the JSON is already on disk so
+    # the raw vector is never serialized into the index file. We attach it to
+    # the returned dict under a leading-underscore key so the caller can persist
+    # it onto the Document row without needing to re-embed.
+    rerank_text = build_index_rerank_text(full_index)
+    index_doc["_index_embedding_text"] = rerank_text
+    index_doc["_index_embedding"] = []
+    if rerank_text:
+        try:
+            vec = (await embed_texts([rerank_text]))[0]
+            index_doc["_index_embedding"] = list(vec)
+        except Exception as exc:
+            logger.warning(
+                "Index-rerank embedding failed for %s: %s (indexing continues)",
+                filename, exc,
+            )
+
     logger.info(
-        "Generated index for %s (dept=%s, shared=%s, entities=%d)",
+        "Generated index for %s (dept=%s, shared=%s, entities=%d, rerank_embed=%s)",
         filename, department, merged_shared,
         len(index_doc.get("knowledge_graph", {}).get("entities", [])),
+        "yes" if index_doc["_index_embedding"] else "no",
     )
     return index_doc

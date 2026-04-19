@@ -14,6 +14,7 @@ Flow per document:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -649,7 +650,7 @@ def retrieve_by_entities(
     *,
     top_k: int = 10,
     expand_one_hop: bool = True,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Score documents by how well they match the given entity set.
 
     Scoring:
@@ -662,10 +663,14 @@ def retrieve_by_entities(
     the score over noisy high-frequency entities (e.g. "本公司"). The edge weight
     in kg_document_relations is kept as-is (it is a count of shared entities).
 
-    Returns a list of dicts sorted by score descending, capped at top_k.
+    Returns ``{"documents": [...], "doc_relations": [...]}`` where ``documents``
+    is sorted by score descending (capped at ``top_k``) and ``doc_relations``
+    contains the document-document edges used for 1-hop expansion (only edges
+    that touch at least one returned document are kept, so the frontend can
+    render the signal-propagation path faithfully).
     """
     if not entity_ids:
-        return []
+        return {"documents": [], "doc_relations": []}
 
     from app.models.document import Document  # local import to avoid cycle
 
@@ -689,8 +694,9 @@ def retrieve_by_entities(
         scores[doc_id] = scores.get(doc_id, 0.0) + weight
         matched_entities_per_doc.setdefault(doc_id, set()).add(ent_id)
 
+    expansion_edges: list[tuple[int, int, float]] = []
     if expand_one_hop and scores:
-        direct_doc_ids = list(scores.keys())
+        direct_doc_ids = set(scores.keys())
         rel_rows = db.query(
             DocumentRelation.src_doc_id,
             DocumentRelation.dst_doc_id,
@@ -700,13 +706,21 @@ def retrieve_by_entities(
             | (DocumentRelation.dst_doc_id.in_(direct_doc_ids))
         ).all()
         for src, dst, weight in rel_rows:
-            other = dst if src in scores else src
+            src_direct = src in direct_doc_ids
+            dst_direct = dst in direct_doc_ids
+            # Only edges that introduce a *new* neighbour contribute to scoring;
+            # we still keep direct<->direct edges in expansion_edges so the
+            # frontend can draw them, but they don't boost the score.
+            expansion_edges.append((src, dst, float(weight)))
+            if src_direct and dst_direct:
+                continue
+            other = dst if src_direct else src
             if other in scores:
                 continue
             scores[other] = scores.get(other, 0.0) + 0.5 * float(weight)
 
     if not scores:
-        return []
+        return {"documents": [], "doc_relations": []}
 
     doc_ids_sorted = sorted(scores.keys(), key=lambda d: scores[d], reverse=True)[:top_k]
     docs = {
@@ -727,7 +741,94 @@ def retrieve_by_entities(
             "score": round(scores[doc_id], 4),
             "matched_entities": sorted(list(matched_entities_per_doc.get(doc_id, set()))),
         })
-    return results
+
+    returned_doc_ids = {r["doc_id"] for r in results}
+    doc_relations: list[dict[str, Any]] = []
+    seen_edge: set[tuple[int, int]] = set()
+    for src, dst, weight in expansion_edges:
+        if src not in returned_doc_ids or dst not in returned_doc_ids:
+            continue
+        key = (min(src, dst), max(src, dst))
+        if key in seen_edge:
+            continue
+        seen_edge.add(key)
+        doc_relations.append({
+            "src_doc_id": key[0],
+            "dst_doc_id": key[1],
+            "weight": weight,
+        })
+
+    return {"documents": results, "doc_relations": doc_relations}
+
+
+def _rerank_documents_by_query_embedding(
+    db: Session,
+    documents: list[dict[str, Any]],
+    query_vec: list[float],
+    *,
+    alpha: float,
+    beta: float,
+    min_score: float,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Fuse the KG entity-match score with the index-embedding cosine similarity.
+
+    Strategy:
+      * Pull the stored ``index_embedding`` for every candidate doc in one query.
+      * Normalize the KG score by the max observed score so it's on [0, 1]
+        and directly comparable to cosine similarity.
+      * ``final = alpha * kg_norm + beta * cosine``.
+      * Drop any doc whose cosine < ``min_score`` — this is the main knob that
+        kills "entity mentioned but topic unrelated" noise.
+      * Docs without a stored embedding keep their KG-only score (no rerank
+        penalty), so the system degrades gracefully during the rollout window
+        before all docs have been back-filled.
+      * Re-sort by ``final`` and truncate to ``top_k``.
+    """
+    if not documents or not query_vec:
+        return documents[:top_k]
+
+    from app.models.document import Document  # local import to avoid cycle
+
+    doc_ids = [d["doc_id"] for d in documents]
+    rows = (
+        db.query(Document.id, Document.index_embedding, Document.index_embedding_dim)
+        .filter(Document.id.in_(doc_ids))
+        .all()
+    )
+    vec_by_doc: dict[int, list[float]] = {}
+    for doc_id, blob, dim in rows:
+        if blob and dim:
+            vec_by_doc[doc_id] = unpack_vector(blob, dim)
+
+    max_kg = max((d.get("score", 0.0) for d in documents), default=0.0) or 1.0
+
+    reranked: list[dict[str, Any]] = []
+    for d in documents:
+        kg_score = float(d.get("score", 0.0))
+        kg_norm = kg_score / max_kg if max_kg > 0 else 0.0
+
+        doc_vec = vec_by_doc.get(d["doc_id"])
+        if doc_vec:
+            cos = cosine_similarity(query_vec, doc_vec)
+            if cos < min_score:
+                # Below the topical-relevance floor: drop it entirely.
+                continue
+            final = alpha * kg_norm + beta * cos
+            d = {
+                **d,
+                "kg_score": round(kg_score, 4),
+                "index_cosine": round(cos, 4),
+                "score": round(final, 4),
+            }
+        else:
+            # No embedding yet (pre-backfill or embedding disabled) — keep the
+            # KG score on its original scale so the item can still surface.
+            d = {**d, "kg_score": round(kg_score, 4), "index_cosine": None}
+        reranked.append(d)
+
+    reranked.sort(key=lambda x: x["score"], reverse=True)
+    return reranked[:top_k]
 
 
 async def retrieve_by_query(
@@ -737,15 +838,57 @@ async def retrieve_by_query(
     top_k: int = 10,
     department: str | None = None,
 ) -> dict[str, Any]:
-    """Full graph-retrieval pipeline used by the Dify integration endpoint."""
-    q_entities = await extract_query_entities(query)
+    """Full graph-retrieval pipeline used by the Dify integration endpoint.
+
+    When ``kg_enable_index_rerank`` is True:
+      1. Run query-entity extraction and query embedding in parallel.
+      2. Over-recall by ``kg_index_rerank_pool_multiplier`` to give rerank room
+         to re-order before trimming to ``top_k``.
+      3. Fuse the KG IDF score with cosine(query, doc.index_embedding) and drop
+         topically-unrelated documents below ``kg_index_rerank_min_score``.
+    """
+    rerank_enabled = settings.kg_enable_index_rerank
+
+    if rerank_enabled:
+        pool_size = max(top_k, top_k * max(1, settings.kg_index_rerank_pool_multiplier))
+        entity_task = asyncio.create_task(extract_query_entities(query))
+        embed_task = asyncio.create_task(_safe_embed_query(query))
+        q_entities = await entity_task
+        q_vec = await embed_task
+    else:
+        pool_size = top_k
+        q_entities = await extract_query_entities(query)
+        q_vec = []
+
     matched = await match_query_entities(db, q_entities)
     entity_ids = [e.id for e in matched]
 
-    documents = retrieve_by_entities(db, entity_ids, top_k=top_k)
+    retrieval = retrieve_by_entities(db, entity_ids, top_k=pool_size)
+    documents = retrieval["documents"]
+    doc_relations = retrieval["doc_relations"]
+
+    if rerank_enabled and documents:
+        documents = _rerank_documents_by_query_embedding(
+            db, documents, q_vec,
+            alpha=settings.kg_index_rerank_alpha,
+            beta=settings.kg_index_rerank_beta,
+            min_score=settings.kg_index_rerank_min_score,
+            top_k=top_k,
+        )
+        # Drop any edges that now reference a dropped doc so the graph stays consistent.
+        kept_ids = {d["doc_id"] for d in documents}
+        doc_relations = [
+            r for r in doc_relations
+            if r["src_doc_id"] in kept_ids and r["dst_doc_id"] in kept_ids
+        ]
 
     if department:
         documents = [d for d in documents if (d.get("department") or "") == department]
+        kept_ids = {d["doc_id"] for d in documents}
+        doc_relations = [
+            r for r in doc_relations
+            if r["src_doc_id"] in kept_ids and r["dst_doc_id"] in kept_ids
+        ]
 
     return {
         "query": query,
@@ -754,7 +897,25 @@ async def retrieve_by_query(
             for e in matched
         ],
         "documents": documents,
+        "doc_relations": doc_relations,
     }
+
+
+async def _safe_embed_query(query: str) -> list[float]:
+    """Embed the user query for index-rerank; log and swallow errors.
+
+    Returning [] lets callers gracefully skip the rerank step and fall back to
+    pure entity-match ranking instead of failing the whole retrieval request.
+    """
+    text_in = (query or "").strip()
+    if not text_in:
+        return []
+    try:
+        vecs = await embed_texts([text_in])
+        return vecs[0] if vecs else []
+    except Exception as exc:
+        logger.warning("Query embedding failed, skipping rerank: %s", exc)
+        return []
 
 
 # ---- Doc subgraph (for visualization) --------------------------------------

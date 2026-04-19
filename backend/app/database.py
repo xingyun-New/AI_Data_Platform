@@ -48,12 +48,17 @@ def _index_exists(insp, table: str, index_name: str) -> bool:
 
 def run_migrations() -> None:
     """Add missing columns and indexes to existing tables (lightweight schema migration)."""
+    # Postgres uses BYTEA for raw bytes; SQLite accepts BLOB (or even the BYTEA keyword
+    # as a no-op type name). We branch on dialect to stay portable.
+    _blob_type = "BYTEA" if _is_postgres else "BLOB"
     _MIGRATIONS: list[tuple[str, str, str]] = [
         ("users", "display_name", "VARCHAR(200) NOT NULL DEFAULT ''"),
         ("users", "section", "VARCHAR(200) NOT NULL DEFAULT ''"),
         ("documents", "section", "VARCHAR(200) NOT NULL DEFAULT ''"),
         ("documents", "uploaded_by", "VARCHAR(100) NOT NULL DEFAULT ''"),
         ("documents", "knowledge_base_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+        ("documents", "index_embedding", f"{_blob_type}"),
+        ("documents", "index_embedding_dim", "INTEGER NOT NULL DEFAULT 0"),
         ("kg_entities", "embedding_dim", "INTEGER NOT NULL DEFAULT 0"),
     ]
     insp = inspect(engine)

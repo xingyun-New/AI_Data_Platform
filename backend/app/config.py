@@ -73,6 +73,23 @@ class Settings(BaseSettings):
     # model without paying the per-query latency cost.
     kg_query_model: str = "qwen3.5-flash"
 
+    # --- Index-rerank (topic-level second-stage filtering) ----------------
+    # After the KG entity-match recall picks candidate documents, we score
+    # each candidate by cosine(query_embedding, document_index_embedding)
+    # to down-weight "entity is mentioned but topic is unrelated" noise.
+    kg_enable_index_rerank: bool = True
+    """Master switch. Set to False to fall back to pure entity-match ranking."""
+    kg_index_rerank_alpha: float = 0.6
+    """Weight of the normalized entity-match score in the final fused score."""
+    kg_index_rerank_beta: float = 0.4
+    """Weight of the index-embedding cosine similarity in the final fused score."""
+    kg_index_rerank_min_score: float = 0.25
+    """Documents whose cosine falls below this are dropped outright
+    (guards against "entity matched but topic is clearly unrelated")."""
+    kg_index_rerank_pool_multiplier: int = 2
+    """Initial KG recall size is ``top_k * multiplier``, then trimmed to
+    ``top_k`` after rerank. Larger values give rerank more room to re-order."""
+
     # Database
     database_url: str = "postgresql+psycopg2://appuser:apppassword@db:5432/ai_data_platform"
 

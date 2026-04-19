@@ -46,12 +46,25 @@ class RetrieveDocItem(BaseModel):
     status: str
     score: float
     matched_entities: list[int]
+    # Populated only when kg_enable_index_rerank is True. ``kg_score`` is the
+    # raw entity-match IDF score (pre-fusion); ``index_cosine`` is the cosine
+    # between the user query and the doc's stored index embedding. Both are
+    # exposed so Dify / the admin UI can surface "why was this doc picked".
+    kg_score: float | None = None
+    index_cosine: float | None = None
+
+
+class RetrieveDocRelation(BaseModel):
+    src_doc_id: int
+    dst_doc_id: int
+    weight: float
 
 
 class RetrieveResponse(BaseModel):
     query: str
     matched_entities: list[dict[str, Any]]
     documents: list[RetrieveDocItem]
+    doc_relations: list[RetrieveDocRelation] = []
     knowledge_db_names: list[str]
 
 
@@ -92,6 +105,7 @@ async def retrieve(
         query=result["query"],
         matched_entities=result["matched_entities"],
         documents=documents,
+        doc_relations=result.get("doc_relations", []),
         knowledge_db_names=[d["knowledge_db_name"] for d in documents],
     )
 

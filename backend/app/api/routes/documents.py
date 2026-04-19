@@ -260,6 +260,13 @@ async def trigger_index(
         doc.index_path = str(file_manager._index_dir() / f"{stem}.json")
         doc.status = "indexed"
         doc.error_message = ""
+
+        rerank_vec = index_doc.get("_index_embedding") or []
+        if rerank_vec:
+            from app.core.embedding_service import pack_vector
+            doc.index_embedding = pack_vector(rerank_vec)
+            doc.index_embedding_dim = len(rerank_vec)
+
         db.commit()
 
         graph_block = index_doc.get("knowledge_graph")

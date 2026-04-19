@@ -6,13 +6,14 @@
 
 ## 数据模型
 
-三张表构成双层图：
+三张表构成双层图，外加一列"主题向量"挂在文档本体上：
 
-| 表 | 作用 |
+| 表/列 | 作用 |
 | --- | --- |
 | `kg_entities` | 归一化的实体节点（person / customer / project / product / org / contract / other），带 embedding |
 | `kg_document_entities` | 边：Document --mentions / about / authored_by / belongs_to--> Entity |
 | `kg_document_relations` | 边：Document ↔ Document（基于共享实体，无向；存储时 `src_id < dst_id`） |
+| `documents.index_embedding` | 文档 index 的"主题签名"向量（由 purpose+summary+keywords+scenarios 拼接后 embedding），用于检索阶段做主题级 rerank |
 
 ## 构建流程
 
@@ -27,12 +28,33 @@
 
 | 键 | 默认 | 作用 |
 | --- | --- | --- |
-| `kg_embedding_model` | `text-embedding-v3` | DashScope embedding 模型 |
+| `kg_embedding_model` | `text-embedding-v4` | DashScope embedding 模型 |
 | `kg_embedding_dim` | `1024` | 向量维度 |
 | `kg_embedding_batch_size` | `10` | 单次 API 请求最大条数 |
 | `kg_entity_merge_threshold` | `0.88` | 同类型实体合并的 cosine 阈值 |
 | `kg_min_shared_entities` | `2` | 两文档共享实体数 ≥ N 才建边 |
 | `kg_max_edges_per_doc` | `50` | 单文档最多保留的关系边数 |
+| `kg_enable_index_rerank` | `True` | 是否启用"主题 rerank"二次筛选 |
+| `kg_index_rerank_alpha` | `0.6` | 融合打分里 KG 实体分（归一化到 [0,1]）的权重 |
+| `kg_index_rerank_beta` | `0.4` | 融合打分里 query 与 index embedding 余弦相似度的权重 |
+| `kg_index_rerank_min_score` | `0.25` | 余弦低于此值的文档直接剔除（主要用于过滤"命中实体但主题不相关"） |
+| `kg_index_rerank_pool_multiplier` | `2` | 初召回扩展到 `top_k * multiplier`，再 rerank 截到 `top_k` |
+
+## 主题 rerank（二次筛选）
+
+纯实体匹配只知道"哪些文档提到了这些实体"，无法区分"主题就是它"和"顺带提一句"。为此每份文档在 index 生成阶段会额外产出一个**主题向量**并存到 `documents.index_embedding`，检索时：
+
+1. 提取 query 实体 与 query embedding（两路 I/O 并行）
+2. 按实体 IDF 先粗召回 `top_k × kg_index_rerank_pool_multiplier` 份文档
+3. 对候选文档计算 `cosine(query_vec, doc.index_embedding)`
+4. 丢弃余弦 < `kg_index_rerank_min_score` 的（明显"跑题"的文档）
+5. 按 `final = α × kg_norm + β × cosine` 重排，截取 `top_k`
+
+返回的 `documents[*]` 会多两个字段 `kg_score`（原始实体分）和 `index_cosine`（与 query 的主题相似度），便于排障和 A/B。
+
+把 `kg_enable_index_rerank` 设成 `false` 可一键回退到旧的实体 IDF 排序。
+
+新文档走 `generate-index` 时会**自动**写入 `index_embedding`；存量文档需要调一次回填（见"运维建议"）。
 
 ## API 接口
 
@@ -161,3 +183,12 @@ curl -X POST http://<host>:8000/api/graph/retrieve \
 - **存量回填**：部署后立即调 `POST /api/graph/rebuild`，`only_missing=true` 增量处理
 - **重索引**：当 `graph_extract.txt` 改动后，可带 `only_missing=false` 全量重跑（可以先 `DELETE /api/graph/document/{id}` 清理旧边，或直接复用同一文档 id，`save_graph` 内会覆盖）
 - **明星实体治理**：`GET /api/graph/entities` 按 `mention_count desc` 可以发现"本公司"这类高频无意义实体；未来可加"黑名单"字段阻止其参与建边
+- **index 主题向量回填**：加入 `documents.index_embedding` 列后，存量文档需要跑一次：
+  - 预览：`.\scripts\rebuild_index_embeddings.ps1 -DryRun`
+  - 回填（只处理缺失）：`.\scripts\rebuild_index_embeddings.ps1 -Yes`
+  - 全量重算：`.\scripts\rebuild_index_embeddings.ps1 -All -Yes`
+  - 回填失败不影响检索：`retrieve_by_query` 对未回填文档会自动降级为纯 KG 分数
+- **rerank 调参思路**：
+  - 如果发现"相关的文档被误过滤"，先把 `kg_index_rerank_min_score` 从 0.25 降到 0.15~0.20
+  - 如果发现"无关文档还是上来"，调高 `kg_index_rerank_beta`（比如 0.5）并适当提升 `min_score`
+  - 彻底回退：`kg_enable_index_rerank=False`
