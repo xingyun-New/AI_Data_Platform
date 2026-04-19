@@ -203,6 +203,12 @@ export interface KgRetrieveDoc {
   matched_entities: number[];
 }
 
+export interface KgRetrieveDocRelation {
+  src_doc_id: number;
+  dst_doc_id: number;
+  weight: number;
+}
+
 export interface KgRebuildResult {
   total: number;
   success: number;

@@ -102,6 +102,7 @@ export const graphApi = {
       query: string;
       matched_entities: { id: number; name: string; type: string }[];
       documents: import('./types').KgRetrieveDoc[];
+      doc_relations: import('./types').KgRetrieveDocRelation[];
       knowledge_db_names: string[];
     }>('/api/graph/retrieve', data),
 };

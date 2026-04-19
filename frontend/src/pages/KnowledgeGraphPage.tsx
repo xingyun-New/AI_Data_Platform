@@ -10,6 +10,7 @@ import {
   message,
   Popconfirm,
   Row,
+  Segmented,
   Select,
   Space,
   Statistic,
@@ -23,8 +24,10 @@ import type {
   KgEntity,
   KgEntityDocument,
   KgRetrieveDoc,
+  KgRetrieveDocRelation,
   KgStats,
 } from '../api/types';
+import GraphRetrievalVisualization from '../components/kg/GraphRetrievalVisualization';
 
 const ENTITY_TYPE_OPTIONS = [
   { value: 'person', label: '人物' },
@@ -68,8 +71,10 @@ export default function KnowledgeGraphPage() {
   const [testResult, setTestResult] = useState<{
     matched_entities: { id: number; name: string; type: string }[];
     documents: KgRetrieveDoc[];
+    doc_relations: KgRetrieveDocRelation[];
   } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph');
 
   const fetchStats = async () => {
     try {
@@ -140,11 +145,40 @@ export default function KnowledgeGraphPage() {
       setTestResult({
         matched_entities: data.matched_entities,
         documents: data.documents,
+        doc_relations: data.doc_relations || [],
       });
     } catch (err: any) {
       message.error(`检索失败：${err?.message || '未知错误'}`);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleEntityNodeClick = async (entityId: number) => {
+    const hit = entities.find((e) => e.id === entityId);
+    if (hit) {
+      openEntityDetail(hit);
+      return;
+    }
+    // Query-matched entity may not be in the current paginated entities list;
+    // synthesize a stub and fetch its documents directly.
+    const matched = testResult?.matched_entities.find((e) => e.id === entityId);
+    const stub: KgEntity = {
+      id: entityId,
+      name: matched?.name || `#${entityId}`,
+      entity_type: matched?.type || 'other',
+      aliases: [],
+      mention_count: 0,
+      created_at: '',
+    };
+    setSelectedEntity(stub);
+    setDrawerOpen(true);
+    try {
+      const { data } = await graphApi.entityDocuments(entityId);
+      setEntityDocs(data.documents);
+    } catch {
+      message.error('加载实体详情失败');
+      setEntityDocs([]);
     }
   };
 
@@ -253,38 +287,69 @@ export default function KnowledgeGraphPage() {
 
         {testResult && (
           <div style={{ marginTop: 16 }}>
-            <Typography.Text strong>命中实体：</Typography.Text>
-            {testResult.matched_entities.length === 0 ? (
-              <Typography.Text type="secondary">（未命中任何实体）</Typography.Text>
-            ) : (
-              <Space wrap style={{ marginLeft: 8 }}>
-                {testResult.matched_entities.map((e) => (
-                  <Tag color={TYPE_COLOR[e.type] || 'default'} key={e.id}>
-                    {e.name}（{TYPE_LABEL[e.type] || e.type}）
-                  </Tag>
-                ))}
+            <Space
+              style={{ width: '100%', justifyContent: 'space-between' }}
+              align="start"
+              wrap
+            >
+              <Space wrap>
+                <Typography.Text strong>命中实体：</Typography.Text>
+                {testResult.matched_entities.length === 0 ? (
+                  <Typography.Text type="secondary">（未命中任何实体）</Typography.Text>
+                ) : (
+                  testResult.matched_entities.map((e) => (
+                    <Tag color={TYPE_COLOR[e.type] || 'default'} key={e.id}>
+                      {e.name}（{TYPE_LABEL[e.type] || e.type}）
+                    </Tag>
+                  ))
+                )}
               </Space>
-            )}
-            <List
-              style={{ marginTop: 12 }}
-              header={<Typography.Text strong>召回文档（Top {testResult.documents.length}）</Typography.Text>}
-              dataSource={testResult.documents}
-              renderItem={(d) => (
-                <List.Item>
-                  <Space direction="vertical" size={0} style={{ width: '100%' }}>
-                    <Space>
-                      <Typography.Text strong>{d.filename}</Typography.Text>
-                      <Tag>{d.department || '未分部门'}</Tag>
-                      <Tag color="blue">score: {d.score}</Tag>
+              <Segmented
+                value={viewMode}
+                onChange={(v) => setViewMode(v as 'graph' | 'list')}
+                options={[
+                  { label: '关系图', value: 'graph' },
+                  { label: '列表', value: 'list' },
+                ]}
+              />
+            </Space>
+
+            {viewMode === 'graph' ? (
+              <div style={{ marginTop: 12 }}>
+                <Typography.Text strong>
+                  召回文档（Top {testResult.documents.length}） · 神经元关系图
+                </Typography.Text>
+                <div style={{ marginTop: 8 }}>
+                  <GraphRetrievalVisualization
+                    matchedEntities={testResult.matched_entities}
+                    documents={testResult.documents}
+                    docRelations={testResult.doc_relations}
+                    onEntityClick={handleEntityNodeClick}
+                  />
+                </div>
+              </div>
+            ) : (
+              <List
+                style={{ marginTop: 12 }}
+                header={<Typography.Text strong>召回文档（Top {testResult.documents.length}）</Typography.Text>}
+                dataSource={testResult.documents}
+                renderItem={(d) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                      <Space>
+                        <Typography.Text strong>{d.filename}</Typography.Text>
+                        <Tag>{d.department || '未分部门'}</Tag>
+                        <Tag color="blue">score: {d.score}</Tag>
+                      </Space>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        命中实体：{d.matched_entities.join(', ') || '（仅通过 1-hop 扩展召回）'}
+                      </Typography.Text>
                     </Space>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      命中实体：{d.matched_entities.join(', ') || '（仅通过 1-hop 扩展召回）'}
-                    </Typography.Text>
-                  </Space>
-                </List.Item>
-              )}
-              locale={{ emptyText: <Empty description="无召回结果" /> }}
-            />
+                  </List.Item>
+                )}
+                locale={{ emptyText: <Empty description="无召回结果" /> }}
+              />
+            )}
           </div>
         )}
       </Card>
