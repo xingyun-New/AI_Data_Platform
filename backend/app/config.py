@@ -73,6 +73,22 @@ class Settings(BaseSettings):
     # model without paying the per-query latency cost.
     kg_query_model: str = "qwen3.5-flash"
 
+    # --- Query-side NER fast path (Aho-Corasick) --------------------------
+    # The ``kg_query_model`` call above dominates per-query latency. Before
+    # falling back to it we try to match the question against an in-memory
+    # Aho-Corasick automaton built from ``kg_entities.name`` + aliases.
+    # When the automaton returns >=1 hit we use its result directly and skip
+    # the LLM NER entirely (the matched ids are already canonical, so the
+    # downstream embedding-based fuzzy-match step is unnecessary too).
+    kg_query_use_automaton: bool = True
+    """Master switch for the Aho-Corasick fast path. Set to False to go back
+    to the pure LLM NER path (useful for A/B or incident fallback)."""
+    kg_query_automaton_min_length: int = 2
+    """Minimum surface-form length to register in the automaton. Filters
+    1-char/1-digit forms that would cause catastrophic substring false
+    positives in Chinese (no word boundaries). Raise to 3 if you see
+    noise from 2-char person names colliding with common substrings."""
+
     # --- Index-rerank (topic-level second-stage filtering) ----------------
     # After the KG entity-match recall picks candidate documents, we score
     # each candidate by cosine(query_embedding, document_index_embedding)

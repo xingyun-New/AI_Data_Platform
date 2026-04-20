@@ -9,3 +9,5 @@ python-jose[cryptography]>=3.3.0
 pydantic-settings>=2.7.0
 python-multipart>=0.0.18
 psycopg2-binary>=2.9.10
+pyahocorasick>=2.1.0
+pyahocorasick>=2.1.0

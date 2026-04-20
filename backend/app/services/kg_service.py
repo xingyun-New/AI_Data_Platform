@@ -34,6 +34,13 @@ from app.core.embedding_service import (
     weighted_mean,
 )
 from app.models.knowledge_graph import DocumentEntity, DocumentRelation, Entity
+from app.services import kg_entity_matcher
+from app.services.kg_utils import (
+    dump_aliases as _dump_aliases,
+    is_blacklisted as _is_blacklisted,
+    normalize_name as _normalize_name,
+    parse_aliases as _parse_aliases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,45 +50,11 @@ _VALID_ENTITY_TYPES = {
 _VALID_REL_TYPES = {"mentions", "authored_by", "about", "belongs_to"}
 
 
-def _is_blacklisted(name: str) -> bool:
-    """True if the (already-normalized) entity name is in the configured blacklist."""
-    if not name:
-        return True
-    blacklist = settings.kg_entity_blacklist_set
-    if not blacklist:
-        return False
-    return name in blacklist
-
-
 # ---- Helpers ----------------------------------------------------------------
 
 def _embed_text(entity_type: str, name: str) -> str:
     """Canonical text used to compute an entity's embedding (type-prefixed)."""
     return f"{entity_type}: {name}"
-
-
-def _normalize_name(name: str) -> str:
-    """Light-weight textual normalization for exact-match fast path.
-
-    Applies casefold() so English surface forms (e.g. "Snowflake" vs "snowflake")
-    collapse to a single canonical key. Casefold is a no-op for CJK characters,
-    so Chinese entities are unaffected.
-    """
-    return (name or "").strip().casefold()
-
-
-def _parse_aliases(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-        return [str(x) for x in data] if isinstance(data, list) else []
-    except (json.JSONDecodeError, TypeError):
-        return []
-
-
-def _dump_aliases(aliases: list[str]) -> str:
-    return json.dumps(list(dict.fromkeys(aliases)), ensure_ascii=False)
 
 
 # ---- Entity normalization ---------------------------------------------------
@@ -841,27 +814,55 @@ async def retrieve_by_query(
 ) -> dict[str, Any]:
     """Full graph-retrieval pipeline used by the Dify integration endpoint.
 
-    When ``kg_enable_index_rerank`` is True:
-      1. Run query-entity extraction and query embedding in parallel.
-      2. Over-recall by ``kg_index_rerank_pool_multiplier`` to give rerank room
-         to re-order before trimming to ``top_k``.
-      3. Fuse the KG IDF score with cosine(query, doc.index_embedding) and drop
-         topically-unrelated documents below ``kg_index_rerank_min_score``.
+    Pipeline:
+      1. Try the Aho-Corasick fast path over ``kg_entities`` (see
+         ``kg_entity_matcher``). When it returns >=1 hit the LLM NER and the
+         embedding-based fuzzy-match step are skipped entirely.
+      2. If the fast path returns 0 hits (or is disabled), fall back to the
+         LLM-driven ``extract_query_entities`` + ``match_query_entities``.
+      3. When ``kg_enable_index_rerank`` is True, query embedding runs in
+         parallel with NER, and the candidate pool is over-recalled by
+         ``kg_index_rerank_pool_multiplier`` so rerank has headroom.
+      4. Finally fuse the KG IDF score with ``cosine(query, doc.index_embedding)``
+         and drop documents below ``kg_index_rerank_min_score``.
     """
     rerank_enabled = settings.kg_enable_index_rerank
+    pool_size = (
+        max(top_k, top_k * max(1, settings.kg_index_rerank_pool_multiplier))
+        if rerank_enabled else top_k
+    )
 
-    if rerank_enabled:
-        pool_size = max(top_k, top_k * max(1, settings.kg_index_rerank_pool_multiplier))
-        entity_task = asyncio.create_task(extract_query_entities(query))
-        embed_task = asyncio.create_task(_safe_embed_query(query))
-        q_entities = await entity_task
-        q_vec = await embed_task
+    # Query embedding is needed for rerank; fire it first so it overlaps with
+    # the NER step regardless of which NER path we end up taking.
+    embed_task = (
+        asyncio.create_task(_safe_embed_query(query)) if rerank_enabled else None
+    )
+
+    fast_ids: list[int] = []
+    if settings.kg_query_use_automaton:
+        try:
+            fast_ids = kg_entity_matcher.extract_entity_ids(db, query)
+        except Exception as exc:
+            logger.warning(
+                "KG automaton fast-path errored, falling back to LLM NER: %s", exc,
+            )
+            fast_ids = []
+
+    if fast_ids:
+        matched = db.query(Entity).filter(Entity.id.in_(fast_ids)).all()
+        # Preserve the matcher's ordering (longest-span-first) so the
+        # downstream IDF ranker stays deterministic across runs.
+        order = {ent_id: idx for idx, ent_id in enumerate(fast_ids)}
+        matched.sort(key=lambda e: order.get(e.id, len(order)))
+        logger.info(
+            "KG NER fast-path hit: query=%r matched_ids=%s", query, fast_ids,
+        )
     else:
-        pool_size = top_k
         q_entities = await extract_query_entities(query)
-        q_vec = []
+        matched = await match_query_entities(db, q_entities)
 
-    matched = await match_query_entities(db, q_entities)
+    q_vec = await embed_task if embed_task is not None else []
+
     entity_ids = [e.id for e in matched]
 
     retrieval = retrieve_by_entities(db, entity_ids, top_k=pool_size)

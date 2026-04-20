@@ -19,7 +19,7 @@
 
 1. 文档通过 `POST /api/documents/{id}/generate-index` 或批量流水线时，`index_generator` 除了原有的索引元数据，还会**并行**调用 `graph_extract.txt` 抽取实体
 2. `kg_service.save_graph()`：
-   - 候选实体批量 embedding（DashScope `text-embedding-v3`）
+   - 候选实体批量 embedding（DashScope `text-embedding-v4`）
    - **同类型内**按余弦相似度 ≥ `kg_entity_merge_threshold`（默认 0.88）合并已有实体；aliases 追加新字面形式；质心向量按加权均值更新
    - 写入 `kg_document_entities`
    - 用一条聚合 SQL 查出所有与新文档共享 ≥ `kg_min_shared_entities`（默认 2）实体的老文档，批量写 `kg_document_relations`；边数由 `kg_max_edges_per_doc`（默认 50）限流
@@ -39,6 +39,20 @@
 | `kg_index_rerank_beta` | `0.4` | 融合打分里 query 与 index embedding 余弦相似度的权重 |
 | `kg_index_rerank_min_score` | `0.25` | 余弦低于此值的文档直接剔除（主要用于过滤"命中实体但主题不相关"） |
 | `kg_index_rerank_pool_multiplier` | `2` | 初召回扩展到 `top_k * multiplier`，再 rerank 截到 `top_k` |
+| `kg_query_use_automaton` | `True` | 查询侧 NER 启用 Aho-Corasick 快速路径，命中即跳过 LLM |
+| `kg_query_automaton_min_length` | `2` | 入 automaton 的 surface form 最小长度，过滤 1 字实体的子串误匹配 |
+
+## 查询侧 NER 加速（Aho-Corasick 快速路径）
+
+`retrieve_by_query` 调用 LLM（`kg_query_model`，默认 `qwen3.5-flash`）从用户问题里抽实体，这一步的网络 + 生成时延（300–800 ms）是查询链路的主要瓶颈。由于被抽取的实体绝大多数都已经在 `kg_entities` 里有记录，我们在进程内维护一个基于 Aho-Corasick 的多模式字符串匹配器（见 `backend/app/services/kg_entity_matcher.py`），用 DB 字典做**本地 O(n+m)** 的命名体识别。
+
+- **命中 ≥ 1**：直接把命中的 `entity_id` 喂给 `retrieve_by_entities`，**跳过 LLM NER + embedding 匹配**，延迟 < 5 ms。
+- **命中 0**：回退到原先的 `extract_query_entities` + `match_query_entities` 路径，保底覆盖 automaton 认不出的新表述。
+- **字典一致性**：每次查询前读一次 `SELECT MAX(updated_at) FROM kg_entities` 作为版本号；新增 / 合并实体会通过 SQLAlchemy 的 `onupdate=func.now()` 自动刷新该字段，下一次查询触发懒重建。
+- **歧义消解**：同一位置被多个 surface form 命中时采用**最长匹配优先**；`kg_query_automaton_min_length`（默认 2）进一步阻止短字符串误匹配（例如人名"张三"出现在"张三丰"中）。
+- **一键回退**：`kg_query_use_automaton=False` 就退回纯 LLM NER 路径，便于 A/B 或事故回滚。
+
+多 worker（uvicorn 多进程）部署时每个进程各自维护一份 automaton，内存占用按实体数量线性增长，20k 实体场景下每进程约几十 MB，可忽略。
 
 ## 主题 rerank（二次筛选）
 
