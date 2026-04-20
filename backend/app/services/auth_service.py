@@ -121,13 +121,25 @@ def verify_password(password: str) -> bool:
     return password == settings.unified_password
 
 
-def create_access_token(username: str, department: str, section: str = "", display_name: str = "") -> str:
+def create_access_token(
+    username: str,
+    department: str,
+    section: str = "",
+    display_name: str = "",
+    roles: list[dict] | None = None,
+) -> str:
+    """Issue a JWT embedding the user's identity and role bindings.
+
+    ``roles`` is a list of ``{"role": str, "department_id": int | None}`` entries so the
+    frontend can render role-aware menus without a second round-trip.
+    """
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {
         "sub": username,
         "dept": department,
         "section": section,
         "display_name": display_name,
+        "roles": roles or [],
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
