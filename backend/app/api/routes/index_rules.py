@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.deps_rbac import require_sys_admin
 from app.database import get_db
 from app.models.index_rule import IndexRule
 
@@ -107,7 +108,7 @@ def list_index_rules(
 def create_index_rule(
     body: IndexRuleCreate,
     db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_sys_admin),
 ):
     rule = IndexRule(
         department=body.department,
@@ -130,7 +131,7 @@ def update_index_rule(
     rule_id: int,
     body: IndexRuleUpdate,
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_sys_admin),
 ):
     rule = db.get(IndexRule, rule_id)
     if not rule:
@@ -149,7 +150,7 @@ def update_index_rule(
 def delete_index_rule(
     rule_id: int,
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_sys_admin),
 ):
     rule = db.get(IndexRule, rule_id)
     if not rule:

@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
+from app.api.deps_rbac import require_sys_admin
 from app.database import get_db
 from app.services.settings_service import (
     batch_update_settings,
@@ -44,13 +46,20 @@ class KnowledgeBasesUpdateRequest(BaseModel):
 
 
 @router.get("/settings", tags=["系统设置"])
-def get_settings(db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_settings(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_sys_admin),
+) -> dict[str, Any]:
     """获取全部系统配置，按分类返回。"""
     return get_all_settings(db)
 
 
 @router.put("/settings", tags=["系统设置"])
-def update_settings(data: SettingsUpdateRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def update_settings(
+    data: SettingsUpdateRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_sys_admin),
+) -> dict[str, Any]:
     """批量更新系统配置。"""
     updates = {
         "dify": data.dify,
@@ -60,7 +69,12 @@ def update_settings(data: SettingsUpdateRequest, db: Session = Depends(get_db)) 
 
 
 @router.put("/settings/{key}", tags=["系统设置"])
-def update_single_setting(key: str, data: SettingSingleUpdateRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def update_single_setting(
+    key: str,
+    data: SettingSingleUpdateRequest,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_sys_admin),
+) -> dict[str, Any]:
     """更新单条配置。"""
     setting = update_setting(db, key, data.value, data.path_mode)
     return {
@@ -72,7 +86,11 @@ def update_single_setting(key: str, data: SettingSingleUpdateRequest, db: Sessio
 
 
 @router.get("/settings/resolve-path", tags=["系统设置"])
-def resolve_relative_path(relative_path: str, db: Session = Depends(get_db)) -> dict[str, str]:
+def resolve_relative_path(
+    relative_path: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_sys_admin),
+) -> dict[str, str]:
     """将相对路径解析为绝对路径。"""
     from app.config import settings as app_settings
     resolved = app_settings.resolve_path(relative_path)
@@ -80,8 +98,15 @@ def resolve_relative_path(relative_path: str, db: Session = Depends(get_db)) -> 
 
 
 @router.get("/knowledge-bases", tags=["系统设置"])
-def get_knowledge_bases_endpoint(db: Session = Depends(get_db)) -> dict[str, Any]:
-    """获取所有知识库列表和默认知识库ID。"""
+def get_knowledge_bases_endpoint(
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """获取所有知识库列表和默认知识库ID。
+
+    All authenticated users may read the KB list (needed for the document upload
+    dropdown). Write access is still restricted to SYS_ADMIN below.
+    """
     return get_knowledge_bases(db)
 
 
@@ -89,6 +114,7 @@ def get_knowledge_bases_endpoint(db: Session = Depends(get_db)) -> dict[str, Any
 def save_knowledge_bases_endpoint(
     data: KnowledgeBasesUpdateRequest,
     db: Session = Depends(get_db),
+    _user: dict = Depends(require_sys_admin),
 ) -> dict[str, Any]:
     """保存知识库列表和默认知识库ID。"""
     kb_list = [kb.model_dump() for kb in data.knowledge_bases]

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.deps_rbac import require_sys_admin
 from app.database import get_db
 from app.models.rule import DesensitizeRule
 
@@ -88,7 +89,7 @@ def list_rules(
 def create_rule(
     body: RuleCreate,
     db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_sys_admin),
 ):
     rule = DesensitizeRule(
         department=body.department,
@@ -121,7 +122,7 @@ def update_rule(
     rule_id: int,
     body: RuleUpdate,
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_sys_admin),
 ):
     rule = db.get(DesensitizeRule, rule_id)
     if not rule:
@@ -148,7 +149,7 @@ def update_rule(
 def delete_rule(
     rule_id: int,
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(require_sys_admin),
 ):
     rule = db.get(DesensitizeRule, rule_id)
     if not rule:

@@ -8,12 +8,22 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.deps_rbac import (
+    can_upload_document,
+    can_view_document,
+    document_filter_clause,
+    is_be_cross,
+    is_sys_admin,
+    resolve_department_id,
+)
 from app.core import file_manager
 from app.core.desensitizer import desensitize_file
 from app.core.dify_uploader import upload_with_metadata
 from app.core.index_generator import generate_index
 from app.database import get_db
+from app.models.department import Department
 from app.models.document import Document
+from app.models.user_role import ROLE_DEPT_PIC
 
 router = APIRouter()
 
@@ -54,6 +64,28 @@ class DocumentContent(BaseModel):
     version: str  # "raw" | "redacted"
 
 
+def _require_document_read(user: dict, db: Session, doc: Document) -> None:
+    """Raise 403 unless the current user may view this document."""
+    if is_sys_admin(user) or is_be_cross(user):
+        return
+    pic_ids = user.get("pic_department_ids") or []
+    dept_code = doc.department or ""
+    if pic_ids and dept_code:
+        dept_id = resolve_department_id(db, dept_code)
+        if dept_id in pic_ids:
+            return
+    home = user.get("department") or ""
+    if dept_code and home and dept_code == home:
+        return
+    raise HTTPException(status_code=403, detail="权限不足：无权查看该文档")
+
+
+def _require_document_write(user: dict, db: Session, doc: Document) -> None:
+    """Raise 403 unless the current user may modify this document."""
+    if not can_upload_document(user, db, doc.department or ""):
+        raise HTTPException(status_code=403, detail="权限不足：无权修改该文档")
+
+
 def _sync_raw_files(db: Session) -> None:
     """Ensure every .md in raw/ has a row in the documents table."""
     raw_files = file_manager.list_raw_files()
@@ -80,7 +112,7 @@ def list_documents(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     _sync_raw_files(db)
     q = db.query(Document)
@@ -90,6 +122,22 @@ def list_documents(
         q = q.filter(Document.status == status)
     if keyword:
         q = q.filter(Document.filename.contains(keyword))
+
+    # Permission-based row filtering: admins and BE_CROSS see everything.
+    # PIC sees their home dept + any department they manage. MEMBER sees home dept only.
+    if not (is_sys_admin(user) or is_be_cross(user)):
+        visible_codes: set[str] = set()
+        home = user.get("department") or ""
+        if home:
+            visible_codes.add(home)
+        pic_ids = user.get("pic_department_ids") or []
+        if pic_ids:
+            codes = [c for (c,) in db.query(Department.code).filter(Department.id.in_(pic_ids)).all()]
+            visible_codes.update(codes)
+        if not visible_codes:
+            q = q.filter(Document.department == "\x00__no_such_dept__")  # forces empty result
+        else:
+            q = q.filter(Document.department.in_(list(visible_codes)))
     
     total = q.count()
     docs = q.order_by(Document.updated_at.desc()).offset((page - 1) * size).limit(size).all()
@@ -123,6 +171,7 @@ def list_documents(
 async def upload_document(
     file: UploadFile = File(...),
     department: str = Query(""),
+    section: str | None = Query(None),
     knowledge_base_id: str = Query(""),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
@@ -133,7 +182,23 @@ async def upload_document(
     content = await file.read()
     filename = file.filename
     dept = department or user["department"]
-    sect = user.get("section", "")
+
+    # When a SYS_ADMIN / BE_CROSS uploads on behalf of another department, they
+    # should NOT stamp their own section onto the document — that would cause
+    # the wrong section-scoped rules to apply. Only inherit the uploader's
+    # section when uploading to their own home department.
+    if section is not None:
+        sect = section
+    elif dept == user.get("department", ""):
+        sect = user.get("section", "")
+    else:
+        sect = ""
+
+    if not can_upload_document(user, db, dept):
+        raise HTTPException(
+            status_code=403,
+            detail=f"权限不足：无权向部门「{dept}」上传文档",
+        )
 
     existing = db.query(Document).filter(Document.filename == filename).first()
     saved_path = file_manager.save_raw(filename, content)
@@ -181,19 +246,21 @@ async def upload_document(
 
 
 @router.get("/{doc_id}", response_model=DocumentContent)
-def get_document(doc_id: int, db: Session = Depends(get_db), _user: dict = Depends(get_current_user)):
+def get_document(doc_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_read(user, db, doc)
     content = file_manager.read_file(Path(doc.raw_path))
     return DocumentContent(filename=doc.filename, content=content, version="raw")
 
 
 @router.get("/{doc_id}/redacted", response_model=DocumentContent)
-def get_redacted(doc_id: int, db: Session = Depends(get_db), _user: dict = Depends(get_current_user)):
+def get_redacted(doc_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_read(user, db, doc)
     content = file_manager.read_redacted(doc.filename)
     if content is None:
         raise HTTPException(status_code=404, detail="脱敏版本尚未生成")
@@ -201,10 +268,11 @@ def get_redacted(doc_id: int, db: Session = Depends(get_db), _user: dict = Depen
 
 
 @router.get("/{doc_id}/index")
-def get_index(doc_id: int, db: Session = Depends(get_db), _user: dict = Depends(get_current_user)):
+def get_index(doc_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_read(user, db, doc)
     raw = file_manager.read_index(Path(doc.filename).stem)
     if raw is None:
         raise HTTPException(status_code=404, detail="索引尚未生成")
@@ -220,6 +288,7 @@ async def trigger_desensitize(
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_write(user, db, doc)
     try:
         department = doc.department or user["department"]
         section = getattr(doc, "section", "") or user.get("section", "")
@@ -245,6 +314,7 @@ async def trigger_index(
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_write(user, db, doc)
     try:
         department = doc.department or user["department"]
         section = getattr(doc, "section", "") or user.get("section", "")
@@ -293,7 +363,7 @@ async def trigger_upload_to_dify(
     doc_id: int,
     knowledge_base_id: str = Query(""),
     db: Session = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     """Upload both full and redacted versions to Dify knowledge base with metadata.
 
@@ -309,6 +379,7 @@ async def trigger_upload_to_dify(
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_write(user, db, doc)
 
     stem = Path(doc.filename).stem
     ext = Path(doc.filename).suffix
@@ -387,6 +458,7 @@ def delete_document(
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_write(user, db, doc)
 
     try:
         import os

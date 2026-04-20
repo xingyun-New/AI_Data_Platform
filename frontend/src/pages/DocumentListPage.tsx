@@ -29,9 +29,17 @@ import {
   SearchOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import type { DocumentItem, KnowledgeBase } from '../api';
-import { docApi, graphApi, settingsApi } from '../api';
+import type { DepartmentOut, DocumentItem, KnowledgeBase } from '../api';
+import { deptApi, docApi, graphApi, settingsApi } from '../api';
 import type { KgDocumentGraph, KgGraphNode } from '../api/types';
+import {
+  canUploadAnywhere,
+  canUploadToDept,
+  isBeCross,
+  isSysAdmin,
+  picDepartmentCodes,
+  writableDepartmentCodes,
+} from '../utils/permissions';
 
 const STATUS_MAP: Record<string, { color: string; label: string }> = {
   raw: { color: 'default', label: '未处理' },
@@ -59,6 +67,10 @@ export default function DocumentListPage() {
   const [selectedKbId, setSelectedKbId] = useState<string>('');
   const [defaultKbId, setDefaultKbId] = useState<string>('');
 
+  const [departments, setDepartments] = useState<DepartmentOut[]>([]);
+  const homeDept = localStorage.getItem('department') || '';
+  const [targetDept, setTargetDept] = useState<string>(homeDept);
+
   const [graphDrawerOpen, setGraphDrawerOpen] = useState(false);
   const [graphDrawerTitle, setGraphDrawerTitle] = useState('');
   const [graphData, setGraphData] = useState<KgDocumentGraph | null>(null);
@@ -82,7 +94,7 @@ export default function DocumentListPage() {
     }
   };
 
-  useEffect(() => { fetchDocs(); fetchKnowledgeBases(); }, []);
+  useEffect(() => { fetchDocs(); fetchKnowledgeBases(); fetchDepartments(); }, []);
 
   const fetchKnowledgeBases = async () => {
     try {
@@ -96,6 +108,15 @@ export default function DocumentListPage() {
       }
     } catch {
       // Silently fail - knowledge bases are optional for display
+    }
+  };
+
+  const fetchDepartments = async () => {
+    try {
+      const { data } = await deptApi.list();
+      setDepartments(data);
+    } catch {
+      // Silently fail — dept list is only used for the upload-target dropdown
     }
   };
 
@@ -125,13 +146,25 @@ export default function DocumentListPage() {
   };
 
   const handleUpload = async (file: File) => {
-    const dept = localStorage.getItem('department') || '';
+    const dept = (targetDept || homeDept || '').trim();
+    if (!dept) {
+      message.warning('请先选择目标部门');
+      return false;
+    }
+    if (!canUploadToDept(dept)) {
+      message.error(`无权向部门「${dept}」上传文档`);
+      return false;
+    }
+    // Cross-department upload: don't stamp the uploader's section onto the doc;
+    // let the backend match only department-level rules.
+    const sectionOverride = dept === homeDept ? undefined : '';
     try {
-      await docApi.upload(file, dept, selectedKbId);
-      message.success(`${file.name} 上传成功`);
+      await docApi.upload(file, dept, selectedKbId, sectionOverride);
+      message.success(`${file.name} 已上传到 ${dept}`);
       fetchDocs(pagination.current, pagination.pageSize);
-    } catch {
-      message.error(`${file.name} 上传失败`);
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || `${file.name} 上传失败`);
     }
     return false;
   };
@@ -275,7 +308,7 @@ export default function DocumentListPage() {
     onChange: (keys: React.Key[]) => setSelectedRowKeys(keys),
   };
 
-  const batchActions = (
+  const batchActions = canUploadAnywhere() ? (
     <Space>
       {selectedRowKeys.length > 0 && (
         <>
@@ -300,7 +333,7 @@ export default function DocumentListPage() {
         </>
       )}
     </Space>
-  );
+  ) : null;
 
 
   const columns = [
@@ -331,38 +364,50 @@ export default function DocumentListPage() {
     { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 180 },
     {
       title: '操作', key: 'action', width: 260,
-      render: (_: unknown, record: DocumentItem) => (
-        <Space size="small">
-          <Tooltip title="查看内容"><Button size="small" icon={<EyeOutlined />} onClick={() => handleView(record)} /></Tooltip>
-          <Tooltip title="AI 脱敏"><Button size="small" icon={<FileProtectOutlined />} onClick={() => handleDesensitize(record)} /></Tooltip>
-          <Tooltip title="生成索引"><Button size="small" icon={<NodeIndexOutlined />} onClick={() => handleIndex(record)} /></Tooltip>
-          <Tooltip title="上传到 Dify 知识库">
-            <Button
-              size="small"
-              icon={<CloudUploadOutlined />}
-              disabled={record.status !== 'indexed' && record.status !== 'uploaded'}
-              onClick={() => handleUploadToDify(record)}
-            />
-          </Tooltip>
-          <Tooltip title="查看知识图谱">
-            <Button
-              size="small"
-              icon={<ApartmentOutlined />}
-              onClick={() => handleViewGraph(record)}
-            />
-          </Tooltip>
-          <Popconfirm
-            title="确定删除？"
-            description="删除后将无法恢复，包括原版、脱敏版和索引文件。"
-            onConfirm={() => handleDelete(record)}
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-          >
-            <Tooltip title="删除文档"><Button size="small" danger icon={<DeleteOutlined />} /></Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
+      render: (_: unknown, record: DocumentItem) => {
+        const canWrite = canUploadToDept(record.department);
+        const writeDisabledTitle = canWrite ? undefined : '无权操作该部门文档';
+        return (
+          <Space size="small">
+            <Tooltip title="查看内容"><Button size="small" icon={<EyeOutlined />} onClick={() => handleView(record)} /></Tooltip>
+            <Tooltip title={writeDisabledTitle || 'AI 脱敏'}>
+              <Button size="small" icon={<FileProtectOutlined />} disabled={!canWrite} onClick={() => handleDesensitize(record)} />
+            </Tooltip>
+            <Tooltip title={writeDisabledTitle || '生成索引'}>
+              <Button size="small" icon={<NodeIndexOutlined />} disabled={!canWrite} onClick={() => handleIndex(record)} />
+            </Tooltip>
+            <Tooltip title={writeDisabledTitle || '上传到 Dify 知识库'}>
+              <Button
+                size="small"
+                icon={<CloudUploadOutlined />}
+                disabled={!canWrite || (record.status !== 'indexed' && record.status !== 'uploaded')}
+                onClick={() => handleUploadToDify(record)}
+              />
+            </Tooltip>
+            <Tooltip title="查看知识图谱">
+              <Button
+                size="small"
+                icon={<ApartmentOutlined />}
+                onClick={() => handleViewGraph(record)}
+              />
+            </Tooltip>
+            {canWrite ? (
+              <Popconfirm
+                title="确定删除？"
+                description="删除后将无法恢复，包括原版、脱敏版和索引文件。"
+                onConfirm={() => handleDelete(record)}
+                okText="删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+              >
+                <Tooltip title="删除文档"><Button size="small" danger icon={<DeleteOutlined />} /></Tooltip>
+              </Popconfirm>
+            ) : (
+              <Tooltip title={writeDisabledTitle}><Button size="small" danger icon={<DeleteOutlined />} disabled /></Tooltip>
+            )}
+          </Space>
+        );
+      },
     },
   ];
 
@@ -383,14 +428,63 @@ export default function DocumentListPage() {
               }))}
               allowClear
             />
-            <Upload
-              accept=".md"
-              showUploadList={false}
-              multiple
-              beforeUpload={(file) => { handleUpload(file as unknown as File); return false; }}
-            >
-              <Button type="primary" icon={<UploadOutlined />}>上传 MD 文档</Button>
-            </Upload>
+            {canUploadAnywhere() && (() => {
+              const activeCodes = departments.filter((d) => d.is_active).map((d) => d.code);
+              const allowedCodes = writableDepartmentCodes(activeCodes);
+              // PIC fallback: if the backend hasn't synced a Department row yet for
+              // one of the PIC's bindings we still want it selectable.
+              picDepartmentCodes().forEach((c) => {
+                if (!allowedCodes.includes(c)) allowedCodes.push(c);
+              });
+              if (homeDept && !allowedCodes.includes(homeDept) && canUploadToDept(homeDept)) {
+                allowedCodes.unshift(homeDept);
+              }
+              const crossDeptUser = isSysAdmin() || isBeCross();
+              return (
+                <>
+                  <Select
+                    placeholder="选择目标部门"
+                    style={{ width: 180 }}
+                    value={targetDept || undefined}
+                    onChange={(v) => setTargetDept(v || '')}
+                    options={allowedCodes.map((code) => {
+                      const d = departments.find((x) => x.code === code);
+                      const label = d && d.name && d.name !== code ? `${code} · ${d.name}` : code;
+                      return {
+                        value: code,
+                        label: code === homeDept ? `${label}（本部门）` : label,
+                      };
+                    })}
+                    showSearch
+                    optionFilterProp="label"
+                    allowClear
+                  />
+                  <Tooltip
+                    title={
+                      crossDeptUser
+                        ? '可为任意部门上传文档，文档将应用所选目标部门的脱敏与索引规则'
+                        : '只能为您负责的部门上传文档'
+                    }
+                  >
+                    <Upload
+                      accept=".md"
+                      showUploadList={false}
+                      multiple
+                      disabled={!targetDept}
+                      beforeUpload={(file) => { handleUpload(file as unknown as File); return false; }}
+                    >
+                      <Button
+                        type="primary"
+                        icon={<UploadOutlined />}
+                        disabled={!targetDept}
+                      >
+                        上传 MD 文档
+                      </Button>
+                    </Upload>
+                  </Tooltip>
+                </>
+              );
+            })()}
             <Input placeholder="搜索文件名" prefix={<SearchOutlined />} value={keyword} onChange={(e) => setKeyword(e.target.value)} onPressEnter={handleSearch} style={{ width: 200 }} allowClear />
             <Select placeholder="状态筛选" allowClear style={{ width: 120 }} value={statusFilter} onChange={setStatusFilter} options={Object.entries(STATUS_MAP).map(([k, v]) => ({ value: k, label: v.label }))} />
             <Button icon={<ReloadOutlined />} onClick={() => fetchDocs(pagination.current, pagination.pageSize)}>刷新</Button>

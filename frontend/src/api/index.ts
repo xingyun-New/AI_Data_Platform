@@ -2,6 +2,7 @@ import client from './client';
 import type {
   BatchFileLogItem,
   BatchSummary,
+  DepartmentOut,
   DocumentContent,
   DocumentItem,
   IndexRuleCreate,
@@ -11,15 +12,39 @@ import type {
   PaginatedResponse,
   PromptFile,
   ResolvedPath,
+  RoleBindingOut,
+  RoleName,
   RuleCreate,
   RuleItem,
   SettingUpdatePayload,
   SettingsGroup,
+  UserInfo,
+  UserOut,
 } from './types';
 
 export const authApi = {
   login: (data: LoginRequest) => client.post<LoginResponse>('/api/auth/login', data),
-  me: () => client.get<{ username: string; display_name: string; department: string; section: string }>('/api/auth/me'),
+  me: () => client.get<UserInfo>('/api/auth/me'),
+};
+
+export const userApi = {
+  list: (params?: { keyword?: string; department?: string; role?: RoleName }) =>
+    client.get<UserOut[]>('/api/users', { params }),
+  get: (id: number) => client.get<UserOut>(`/api/users/${id}`),
+  update: (id: number, data: { display_name?: string; is_active?: boolean }) =>
+    client.patch<UserOut>(`/api/users/${id}`, data),
+  grantRole: (userId: number, data: { role: RoleName; department_id?: number | null }) =>
+    client.post<RoleBindingOut>(`/api/users/${userId}/roles`, data),
+  revokeRole: (userId: number, bindingId: number) =>
+    client.delete(`/api/users/${userId}/roles/${bindingId}`),
+};
+
+export const deptApi = {
+  list: () => client.get<DepartmentOut[]>('/api/departments'),
+  create: (data: { code: string; name?: string; is_active?: boolean }) =>
+    client.post<DepartmentOut>('/api/departments', data),
+  update: (id: number, data: { name?: string; is_active?: boolean }) =>
+    client.patch<DepartmentOut>(`/api/departments/${id}`, data),
 };
 
 export const docApi = {
@@ -35,12 +60,18 @@ export const docApi = {
     client.post(`/api/documents/${id}/upload-to-dify`, null, {
       params: knowledgeBaseId ? { knowledge_base_id: knowledgeBaseId } : {},
     }),
-  upload: (file: File, department?: string, knowledgeBaseId?: string) => {
+  upload: (
+    file: File,
+    department?: string,
+    knowledgeBaseId?: string,
+    section?: string,
+  ) => {
     const form = new FormData();
     form.append('file', file);
     const params: Record<string, string> = {};
     if (department) params.department = department;
     if (knowledgeBaseId) params.knowledge_base_id = knowledgeBaseId;
+    if (section !== undefined) params.section = section;
     return client.post('/api/documents/upload', form, {
       params,
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -122,12 +153,18 @@ export const settingsApi = {
 export type {
   BatchFileLogItem,
   BatchSummary,
+  DepartmentOut,
   DocumentItem,
   IndexRuleItem,
   KnowledgeBase,
   PaginatedResponse,
   PromptFile,
+  RoleBinding,
+  RoleBindingOut,
+  RoleName,
   RuleItem,
   SettingsGroup,
   SettingUpdatePayload,
+  UserInfo,
+  UserOut,
 } from './types';

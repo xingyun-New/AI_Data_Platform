@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+psycopg2://appuser:apppassword@db:5432/ai_data_platform"
 
+    # RBAC
+    admin_usernames: str = "admin"
+    """Comma-separated usernames that are automatically granted SYS_ADMIN on first login."""
+    be_department_code: str = "BE"
+    """Department code whose members automatically get the BE_CROSS role on login."""
+
     # Prompts directory
     prompts_dir: str = str(Path(__file__).resolve().parent.parent / "prompts")
 

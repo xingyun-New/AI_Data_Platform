@@ -3,12 +3,21 @@ export interface LoginRequest {
   password: string;
 }
 
+export type RoleName = 'SYS_ADMIN' | 'BE_CROSS' | 'DEPT_PIC' | 'MEMBER';
+
+export interface RoleBinding {
+  role: RoleName;
+  department_id: number | null;
+  department_code?: string | null;
+}
+
 export interface LoginResponse {
   token: string;
   username: string;
   display_name: string;
   department: string;
   section: string;
+  roles: RoleBinding[];
 }
 
 export interface UserInfo {
@@ -16,6 +25,32 @@ export interface UserInfo {
   display_name: string;
   department: string;
   section: string;
+  roles?: RoleBinding[];
+}
+
+export interface RoleBindingOut extends RoleBinding {
+  id: number;
+  granted_by?: string;
+  granted_at?: string;
+}
+
+export interface UserOut {
+  id: number;
+  username: string;
+  display_name: string;
+  department: string;
+  section: string;
+  is_active: boolean;
+  last_login_at: string | null;
+  created_at: string | null;
+  roles: RoleBindingOut[];
+}
+
+export interface DepartmentOut {
+  id: number;
+  code: string;
+  name: string;
+  is_active: boolean;
 }
 
 export interface DocumentItem {

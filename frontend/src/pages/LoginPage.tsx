@@ -3,6 +3,7 @@ import { Button, Card, Form, Input, message, Typography } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api';
+import { saveRoles } from '../utils/permissions';
 
 const { Title } = Typography;
 
@@ -19,6 +20,7 @@ export default function LoginPage() {
       localStorage.setItem('display_name', data.display_name);
       localStorage.setItem('department', data.department);
       localStorage.setItem('section', data.section);
+      saveRoles(data.roles);
       const nameLabel = data.display_name || data.username;
       const deptLabel = [data.department, data.section].filter(Boolean).join('/');
       message.success(`欢迎 ${nameLabel}（${deptLabel}）`);

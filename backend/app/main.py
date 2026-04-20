@@ -8,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middleware import AuditLogMiddleware
-from app.api.routes import auth, batch, documents, graph, index_rules, prompts, rules, settings
+from app.api.routes import auth, batch, documents, graph, index_rules, prompts, rules, settings, users
 from app.database import Base, engine, run_migrations
 from app.models import knowledge_graph as _kg_models  # noqa: F401  ensure tables are registered
+from app.models import department as _department_model  # noqa: F401  register departments table
+from app.models import user_role as _user_role_model  # noqa: F401  register user_roles table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +45,7 @@ app.include_router(batch.router, prefix="/api/batch", tags=["Batch"])
 app.include_router(prompts.router, prefix="/api/prompts", tags=["提示词"])
 app.include_router(settings.router, prefix="/api", tags=["系统设置"])
 app.include_router(graph.router, prefix="/api/graph", tags=["知识图谱"])
+app.include_router(users.router, prefix="/api", tags=["用户管理"])
 
 
 @app.exception_handler(Exception)

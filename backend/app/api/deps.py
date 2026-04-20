@@ -27,11 +27,19 @@ def get_current_user(
         username: str | None = payload.get("sub")
         if username is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的令牌")
+        raw_roles = payload.get("roles") or []
         return {
             "username": username,
             "department": payload.get("dept") or "",
             "section": payload.get("section") or "",
             "display_name": payload.get("display_name") or username,
+            "roles": raw_roles,
+            "role_names": [r.get("role") for r in raw_roles if isinstance(r, dict)],
+            "pic_department_ids": [
+                r.get("department_id")
+                for r in raw_roles
+                if isinstance(r, dict) and r.get("role") == "DEPT_PIC" and r.get("department_id")
+            ],
         }
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="令牌验证失败")
